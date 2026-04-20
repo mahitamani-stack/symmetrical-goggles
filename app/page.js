@@ -5,38 +5,24 @@ import { Image as DreiImage, Environment } from "@react-three/drei";
 import * as THREE from "three";
 
 const CLOUD = "dyazh2nxk";
+const urlLo = i => `https://res.cloudinary.com/${CLOUD}/image/upload/w_180,q_25,f_auto/img${String(i).padStart(5,"0")}.jpg`;
+const urlHi = i => `https://res.cloudinary.com/${CLOUD}/image/upload/q_auto,f_auto/img${String(i).padStart(5,"0")}.jpg`;
 
-function urlLo(i) {
-  return `https://res.cloudinary.com/${CLOUD}/image/upload/w_120,q_20,f_auto/img${String(i).padStart(5,"0")}.jpg`;
-}
-function urlHi(i) {
-  return `https://res.cloudinary.com/${CLOUD}/image/upload/q_auto,f_auto/img${String(i).padStart(5,"0")}.jpg`;
-}
-
-const RANGES = [
-  [0,   64],
-  [65,  129],
-  [130, 194],
-  [195, 259],
-  [260, 324],
-  [325, 389],
-  [390, 454],
-  [455, 520],
-];
-
-const SYS_PREV = 24;
-const BASE_R   = 3.5;   // ← was 5.5, much tighter now
-const DETAIL_R = 7;
+const RANGES = [[0,64],[65,129],[130,194],[195,259],[260,324],[325,389],[390,454],[455,520]];
+const SYS_PREV  = 20;
+const BASE_R    = 3.8;
+const DETAIL_R  = 7;
+const ZOOM_DIST = 14;
 
 const LAYOUT = [
-  { pos: [-22,  9, -6], scale: 0.82 },
+  { pos: [-22,  9, -6], scale: 0.85 },
   { pos: [  5, 14,  4], scale: 1.05 },
-  { pos: [ 27,  6, -9], scale: 0.70 },
-  { pos: [-13, -9,  5], scale: 1.14 },
-  { pos: [ 11,-13, -2], scale: 0.88 },
-  { pos: [ 28,-10,  8], scale: 0.74 },
+  { pos: [ 27,  6, -9], scale: 0.72 },
+  { pos: [-13, -9,  5], scale: 1.12 },
+  { pos: [ 11,-13, -2], scale: 0.90 },
+  { pos: [ 28,-10,  8], scale: 0.75 },
   { pos: [-28,  2,  3], scale: 0.92 },
-  { pos: [ -1,  1, 10], scale: 1.30 },
+  { pos: [ -1,  1, 10], scale: 1.28 },
 ];
 
 const PLANETS = RANGES.map(([s, e], i) => {
@@ -45,7 +31,7 @@ const PLANETS = RANGES.map(([s, e], i) => {
   const previewIdxs = indices.filter((_, j) => j % step === 0).slice(0, SYS_PREV);
   return {
     id: i,
-    pos: LAYOUT[i].pos,
+    pos: new THREE.Vector3(...LAYOUT[i].pos),
     scale: LAYOUT[i].scale,
     previewUrls: previewIdxs.map(urlLo),
     fullUrls: indices.map(urlHi),
@@ -55,9 +41,9 @@ const PLANETS = RANGES.map(([s, e], i) => {
 function fib(n, r) {
   const phi = Math.PI * (3 - Math.sqrt(5));
   return Array.from({ length: n }, (_, i) => {
-    const y  = (i * 2 / n - 1) + 1 / n;
+    const y = (i * 2 / n - 1) + 1 / n;
     const rr = Math.sqrt(Math.max(0, 1 - y * y));
-    const t  = i * phi;
+    const t = i * phi;
     return [Math.cos(t) * rr * r, y * r, Math.sin(t) * rr * r];
   });
 }
@@ -65,164 +51,173 @@ function fib(n, r) {
 const SYS_FPOS  = PLANETS.map(p => fib(SYS_PREV, BASE_R * p.scale));
 const DETL_FPOS = PLANETS.map(p => fib(p.fullUrls.length, DETAIL_R));
 
-const HC = [
-  [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],
+const HC = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],
   [9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],
-  [13,17],[0,17],[17,18],[18,19],[19,20]
-];
+  [13,17],[0,17],[17,18],[18,19],[19,20]];
 
-function PhotoTile({ pos, url, opacity = 1, tileScale = [1.4, 1.96, 1], onClick }) {
-  const ref = useRef();
-  useFrame(({ camera }) => {
-    if (ref.current) ref.current.lookAt(camera.position);
+// ── THE FIX FOR SPHERE SHAPE ──────────────────────────────────────
+// Each tile looks at its OWN planet's world-space center every frame.
+// This is what made the original single sphere look beautiful.
+// Using getWorldPosition handles system group rotation correctly.
+function PhotoTile({ pos, url, opacity, tileScale, onClick }) {
+  const ref     = useRef();
+  const _center = useRef(new THREE.Vector3());
+
+  useFrame(() => {
+    if (!ref.current?.parent) return;
+    // Get planet center in world space (accounts for all parent rotations)
+    ref.current.parent.getWorldPosition(_center.current);
+    ref.current.lookAt(_center.current);
   });
+
   return (
     <DreiImage
       ref={ref}
       url={url}
       position={pos}
-      scale={tileScale}
+      scale={tileScale ?? [1.6, 2.24, 1]}
       transparent
-      opacity={opacity}
+      opacity={opacity ?? 1}
       toneMapped={false}
-      onClick={e => { e.stopPropagation(); onClick(); }}
+      onClick={e => { e.stopPropagation(); onClick?.(); }}
       onError={() => {}}
     />
   );
 }
 
-function CameraRig({ targetZ, targetFov }) {
+// ── CAMERA TRAVELS TO PLANET ──────────────────────────────────────
+// Camera lerps its position AND its lookAt target — feels like flying in.
+function CameraRig({ camTarget, lookTarget, fovTarget }) {
   const { camera } = useThree();
+  const _look = useRef(new THREE.Vector3());
+
   useFrame(() => {
-    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, 0.05);
-    camera.position.x = THREE.MathUtils.lerp(camera.position.x, 0, 0.05);
-    camera.position.y = THREE.MathUtils.lerp(camera.position.y, 0, 0.05);
-    if (Math.abs(camera.fov - targetFov) > 0.05) {
-      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 0.05);
+    camera.position.lerp(camTarget, 0.04);
+    _look.current.lerp(lookTarget, 0.04);
+    camera.lookAt(_look.current);
+    if (Math.abs(camera.fov - fovTarget) > 0.1) {
+      camera.fov = THREE.MathUtils.lerp(camera.fov, fovTarget, 0.05);
       camera.updateProjectionMatrix();
     }
   });
   return null;
 }
 
-function useSystemRotation(groupRef, handDataRef) {
-  const prevPos = useRef({ x: 0.5, y: 0.5 });
-  const vel     = useRef({ x: 0, y: 0 });
+// ── THE FIX FOR DRAG SNAP ─────────────────────────────────────────
+// anchor stores the rotation AT the moment the drag started.
+// Every frame: targetRot = anchorRot + (currentMouse - anchorMouse) * sens
+// On mouseup: fold current mesh rotation into base so next drag starts there.
+// No snap ever because we always start from real current rotation.
+function Scene({ mouseRef, selectedPlanet, onSelect, didDragRef, onImageClick }) {
+  const sysGrp     = useRef();
+  const planetRefs = useRef([]);
+
+  // Base rotations (updated when drag ends)
+  const sysBase    = useRef({ x: 0, y: 0 });
+  const detailBase = useRef({ x: 0, y: 0 });
+  const selfSpin   = useRef(PLANETS.map(() => 0));
+
+  // Track mousedown state across frames
+  const wasDown    = useRef(false);
+  const prevSel    = useRef(selectedPlanet);
+
+  // When selected planet changes, reset detail base
+  if (prevSel.current !== selectedPlanet) {
+    detailBase.current = { x: 0, y: 0 };
+    prevSel.current = selectedPlanet;
+  }
 
   useFrame((_, dt) => {
-    if (!groupRef.current) return;
-    const h  = handDataRef.current;
-    const px = prevPos.current.x;
-    const py = prevPos.current.y;
-    prevPos.current = { x: h.position.x, y: h.position.y };
+    if (!sysGrp.current) return;
+    const m   = mouseRef.current;
+    const sel = selectedPlanet;
 
-    if (h.present) {
-      const dx = h.position.x - px;
-      const dy = h.position.y - py;
-      vel.current.x = dx * 6;
-      vel.current.y = dy * 4;
-      groupRef.current.rotation.y += vel.current.x;
-      groupRef.current.rotation.x = Math.max(-1, Math.min(1,
-        groupRef.current.rotation.x + vel.current.y));
-    } else {
-      vel.current.x *= 0.93;
-      vel.current.y *= 0.93;
-      groupRef.current.rotation.y += vel.current.x + dt * 0.018;
-      groupRef.current.rotation.x = Math.max(-0.6, Math.min(0.6,
-        groupRef.current.rotation.x + vel.current.y));
-      groupRef.current.rotation.x = THREE.MathUtils.lerp(
-        groupRef.current.rotation.x, 0, 0.02);
+    // ── Detect drag end: fold mesh rotation into base ──────────
+    if (wasDown.current && !m.down) {
+      if (sel === null) {
+        sysBase.current.x = sysGrp.current.rotation.x;
+        sysBase.current.y = sysGrp.current.rotation.y;
+      } else if (planetRefs.current[sel]) {
+        detailBase.current.x = planetRefs.current[sel].rotation.x;
+        detailBase.current.y = planetRefs.current[sel].rotation.y;
+      }
     }
-    const target = 1;
-    const s = THREE.MathUtils.lerp(groupRef.current.scale.x, target, 0.04);
-    groupRef.current.scale.set(s, s, s);
-  });
-}
+    wasDown.current = m.down;
 
-function PlanetSys({ planet, idx, onSelect, didDragRef }) {
-  const grp  = useRef();
-  const spin = 0.025 + idx * 0.006;
-  useFrame((_, dt) => {
-    if (grp.current) grp.current.rotation.y += dt * spin;
-  });
-  const handleClick = () => {
-    if (!didDragRef.current) onSelect(idx);
-  };
-  return (
-    <group ref={grp} position={planet.pos}>
-      {planet.previewUrls.map((url, i) => (
-        <PhotoTile
-          key={i}
-          pos={SYS_FPOS[idx][i]}
-          url={url}
-          opacity={0.85}
-          tileScale={[1.1, 1.54, 1]}
-          onClick={handleClick}
-        />
-      ))}
-    </group>
-  );
-}
+    // ── System group rotation ───────────────────────────────────
+    if (sel === null) {
+      let tx = sysBase.current.x;
+      let ty = sysBase.current.y + (m.down ? 0 : dt * 0.018); // auto-drift
 
-function SystemView({ handDataRef, onSelect, didDragRef }) {
-  const grp = useRef();
-  useSystemRotation(grp, handDataRef);
-  return (
-    <group ref={grp}>
-      {PLANETS.map((p, i) => (
-        <PlanetSys key={i} planet={p} idx={i} onSelect={onSelect} didDragRef={didDragRef} />
-      ))}
-    </group>
-  );
-}
+      if (!m.down) sysBase.current.y += dt * 0.018; // accumulate drift into base
 
-function DetailView({ planetId, handDataRef, onImageClick }) {
-  const grp     = useRef();
-  const prevPos = useRef({ x: 0.5, y: 0.5 });
-  const vel     = useRef({ x: 0, y: 0 });
-  const planet  = PLANETS[planetId];
+      if (m.down && m.anchor) {
+        tx = Math.max(-0.7, Math.min(0.7,
+          m.anchor.rotX + (m.y - m.anchor.y) * 2.5));
+        ty = m.anchor.rotY + (m.x - m.anchor.x) * 3.5;
+      }
 
-  useFrame((_, dt) => {
-    if (!grp.current) return;
-    const h  = handDataRef.current;
-    const px = prevPos.current.x;
-    const py = prevPos.current.y;
-    prevPos.current = { x: h.position.x, y: h.position.y };
+      sysGrp.current.rotation.x = THREE.MathUtils.lerp(sysGrp.current.rotation.x, tx, 0.12);
+      sysGrp.current.rotation.y = THREE.MathUtils.lerp(sysGrp.current.rotation.y, ty, 0.12);
+    }
+    // When zoomed: freeze system group (let camera move to planet)
 
-    if (h.present) {
-      const dx = h.position.x - px;
-      const dy = h.position.y - py;
-      vel.current.x = dx * 8;
-      vel.current.y = dy * 5;
-      grp.current.rotation.y += vel.current.x;
-      grp.current.rotation.x = Math.max(-1.2, Math.min(1.2,
-        grp.current.rotation.x + vel.current.y));
-      const ts = 0.4 + Math.min(Math.max((h.distance - 0.04) / 0.36, 0), 1) * 29.6;
-      const s  = THREE.MathUtils.lerp(grp.current.scale.x, ts, 0.12);
-      grp.current.scale.set(s, s, s);
-    } else {
-      vel.current.x *= 0.93;
-      vel.current.y *= 0.93;
-      grp.current.rotation.y += vel.current.x + dt * 0.05;
-      grp.current.rotation.x = Math.max(-1.2, Math.min(1.2,
-        grp.current.rotation.x + vel.current.y));
-      grp.current.rotation.x = THREE.MathUtils.lerp(grp.current.rotation.x, 0, 0.02);
-      const s = THREE.MathUtils.lerp(grp.current.scale.x, 0.8, 0.05);
-      grp.current.scale.set(s, s, s);
+    // ── Per-planet self-spin (all except selected) ──────────────
+    PLANETS.forEach((_, i) => {
+      if (planetRefs.current[i] && i !== sel) {
+        selfSpin.current[i] += dt * (0.025 + i * 0.006);
+        planetRefs.current[i].rotation.y = selfSpin.current[i];
+        planetRefs.current[i].rotation.x = 0;
+      }
+    });
+
+    // ── Selected planet: user controls its rotation ─────────────
+    if (sel !== null && planetRefs.current[sel]) {
+      const pg = planetRefs.current[sel];
+      if (!m.down) {
+        detailBase.current.y += dt * 0.05;
+      }
+      let tx = detailBase.current.x;
+      let ty = detailBase.current.y;
+      if (m.down && m.anchor) {
+        tx = Math.max(-1.2, Math.min(1.2,
+          m.anchor.rotX + (m.y - m.anchor.y) * 3.5));
+        ty = m.anchor.rotY + (m.x - m.anchor.x) * 5;
+      }
+      pg.rotation.x = THREE.MathUtils.lerp(pg.rotation.x, tx, 0.12);
+      pg.rotation.y = THREE.MathUtils.lerp(pg.rotation.y, ty, 0.12);
     }
   });
 
   return (
-    <group ref={grp}>
-      {planet.fullUrls.map((url, i) => (
-        <PhotoTile
-          key={i}
-          pos={DETL_FPOS[planetId][i]}
-          url={url}
-          opacity={1}
-          onClick={() => onImageClick(url)}
-        />
-      ))}
+    <group ref={sysGrp}>
+      {PLANETS.map((p, i) => {
+        const isSel  = selectedPlanet === i;
+        const isSys  = selectedPlanet === null;
+        const urls   = isSel ? p.fullUrls    : p.previewUrls;
+        const fpos   = isSel ? DETL_FPOS[i]  : SYS_FPOS[i];
+        const sc     = isSel ? [1.6, 2.24, 1] : [1.3, 1.82, 1];
+        const op     = isSys ? 0.90 : (isSel ? 1 : 0.12);
+
+        return (
+          <group key={i} ref={el => { planetRefs.current[i] = el; }} position={p.pos}>
+            {urls.map((url, j) => (
+              <PhotoTile
+                key={`${i}-${j}-${isSel}`}
+                pos={fpos[j]}
+                url={url}
+                opacity={op}
+                tileScale={sc}
+                onClick={
+                  isSys  ? (() => { if (!didDragRef.current) onSelect(i); }) :
+                  isSel  ? (() => onImageClick(url)) :
+                  undefined
+                }
+              />
+            ))}
+          </group>
+        );
+      })}
     </group>
   );
 }
@@ -233,91 +228,93 @@ export default function Home() {
   const handDataRef     = useRef({ present: false, distance: 0.1, position: { x: 0.5, y: 0.5 } });
   const smoothRef       = useRef({ distance: 0.1, x: 0.5, y: 0.5 });
 
-  // ── CLICK FIX: track pixels from mousedown, only drag after 8px ──
-  const mouseDownRef    = useRef(false);
-  const mouseDownPxRef  = useRef({ x: 0, y: 0 });  // raw pixels
-  const didDragRef      = useRef(false);
-  const dragActiveRef   = useRef(false);             // rotation only starts after 8px
+  // Unified mouse state — read in useFrame, no re-renders
+  const mouseRef       = useRef({ down: false, x: 0.5, y: 0.5, anchor: null });
+  const didDragRef     = useRef(false);
+  const mouseDownPxRef = useRef({ x: 0, y: 0 });
 
-  const [cameraReady, setCameraReady]       = useState(false);
-  const [fullscreen, setFullscreen]         = useState(null);
-  const [mode, setMode]                     = useState("mouse");
-  const [selectedPlanet, setSelectedPlanet] = useState(null);
-  const [sceneMode, setSceneMode]           = useState("system");
+  // Keep a ref to current system/detail base rotations for anchor capture
+  // These are written by Scene via callbacks below
+  const captureRotRef = useRef({ x: 0, y: 0 });
 
-  const handleSelectPlanet = idx => {
-    setSelectedPlanet(idx);
-    setSceneMode("detail");
-    handDataRef.current = { ...handDataRef.current, present: false };
-    dragActiveRef.current = false;
+  const [cameraReady,   setCameraReady]   = useState(false);
+  const [fullscreen,    setFullscreen]    = useState(null);
+  const [mode,          setMode]          = useState("mouse");
+  const [selectedPlanet, setSelected]     = useState(null);
+
+  // Camera targets
+  const camTarget  = useRef(new THREE.Vector3(0, 0, 65));
+  const lookTarget = useRef(new THREE.Vector3(0, 0, 0));
+  const fovTarget  = useRef(50);
+
+  // Update camera targets when selection changes
+  useEffect(() => {
+    if (selectedPlanet === null) {
+      camTarget.current.set(0, 0, 65);
+      lookTarget.current.set(0, 0, 0);
+      fovTarget.current = 50;
+    } else {
+      const p   = PLANETS[selectedPlanet];
+      const dir = p.pos.clone().normalize();
+      camTarget.current.copy(p.pos).add(dir.multiplyScalar(ZOOM_DIST));
+      lookTarget.current.copy(p.pos);
+      fovTarget.current = 38;
+    }
+  }, [selectedPlanet]);
+
+  const handleSelect = idx => {
+    setSelected(idx);
+    mouseRef.current = { down: false, x: 0.5, y: 0.5, anchor: null };
+    didDragRef.current = false;
   };
 
   const handleBack = () => {
-    setSelectedPlanet(null);
-    setSceneMode("system");
-    handDataRef.current = { ...handDataRef.current, present: false };
-    dragActiveRef.current = false;
+    setSelected(null);
+    mouseRef.current = { down: false, x: 0.5, y: 0.5, anchor: null };
+    didDragRef.current = false;
   };
 
+  // ── Mouse controls ──────────────────────────────────────────────
   useEffect(() => {
     const onDown = e => {
-      mouseDownRef.current   = true;
-      didDragRef.current     = false;
-      dragActiveRef.current  = false;
+      const x = e.clientX / window.innerWidth;
+      const y = e.clientY / window.innerHeight;
       mouseDownPxRef.current = { x: e.clientX, y: e.clientY };
-      // ← do NOT activate rotation yet
+      didDragRef.current = false;
+      // anchor.rotX/rotY will be set by Scene on first frame (needsInit flag)
+      mouseRef.current = {
+        down: true, x, y,
+        anchor: { x, y, rotX: captureRotRef.current.x, rotY: captureRotRef.current.y },
+      };
     };
 
     const onMove = e => {
-      if (!mouseDownRef.current || mode !== "mouse") return;
-      const dx   = e.clientX - mouseDownPxRef.current.x;
-      const dy   = e.clientY - mouseDownPxRef.current.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-
-      if (dist > 8) {
-        // confirmed drag — NOW activate rotation
-        didDragRef.current    = true;
-        dragActiveRef.current = true;
-      }
-
-      if (dragActiveRef.current) {
-        const x = e.clientX / window.innerWidth;
-        const y = e.clientY / window.innerHeight;
-        handDataRef.current = {
-          ...handDataRef.current,
-          present: true,
-          position: { x: 1 - x, y },
-        };
-      }
+      if (!mouseRef.current.down || mode !== "mouse") return;
+      const x   = e.clientX / window.innerWidth;
+      const y   = e.clientY / window.innerHeight;
+      const dpx = e.clientX - mouseDownPxRef.current.x;
+      const dpy = e.clientY - mouseDownPxRef.current.y;
+      if (Math.sqrt(dpx*dpx + dpy*dpy) > 6) didDragRef.current = true;
+      mouseRef.current.x = x;
+      mouseRef.current.y = y;
     };
 
     const onUp = () => {
-      mouseDownRef.current  = false;
-      dragActiveRef.current = false;
-      if (mode === "mouse")
-        handDataRef.current = { ...handDataRef.current, present: false };
-    };
-
-    const onWheel = e => {
-      if (mode !== "mouse") return;
-      const cur = handDataRef.current.distance;
-      handDataRef.current = { ...handDataRef.current,
-        distance: Math.max(0.04, Math.min(0.4, cur - e.deltaY * 0.0003)) };
+      mouseRef.current.down   = false;
+      mouseRef.current.anchor = null;
     };
 
     window.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup",   onUp);
-    window.addEventListener("wheel",     onWheel, { passive: true });
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup",   onUp);
-      window.removeEventListener("wheel",     onWheel);
     };
   }, [mode]);
 
-  // Hand tracking — unchanged
+  // ── Hand tracking ────────────────────────────────────────────────
   useEffect(() => {
     if (mode !== "hand") return;
     let animId, stream;
@@ -350,44 +347,44 @@ export default function Home() {
           ctx.drawImage(video, 0, 0, 240, 135); ctx.restore();
           const results = hl.detectForVideo(video, performance.now());
           if (results.landmarks?.length > 0) {
-            const lm       = results.landmarks[0];
-            const mirrored = lm.map(p => ({ ...p, x: 1 - p.x }));
+            const lm = results.landmarks[0];
+            const mir = lm.map(p => ({ ...p, x: 1 - p.x }));
             ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
             HC.forEach(([a, b]) => {
               ctx.beginPath();
-              ctx.moveTo(mirrored[a].x * 240, mirrored[a].y * 135);
-              ctx.lineTo(mirrored[b].x * 240, mirrored[b].y * 135);
+              ctx.moveTo(mir[a].x*240, mir[a].y*135);
+              ctx.lineTo(mir[b].x*240, mir[b].y*135);
               ctx.stroke();
             });
-            mirrored.forEach(p => {
-              ctx.beginPath(); ctx.arc(p.x * 240, p.y * 135, 2.5, 0, Math.PI * 2);
+            mir.forEach(p => {
+              ctx.beginPath(); ctx.arc(p.x*240, p.y*135, 2.5, 0, Math.PI*2);
               ctx.fillStyle = "#fff"; ctx.fill();
               ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.stroke();
             });
             const pinch = Math.sqrt(
-              Math.pow(lm[4].x - lm[8].x, 2) + Math.pow(lm[4].y - lm[8].y, 2));
+              Math.pow(lm[4].x-lm[8].x,2)+Math.pow(lm[4].y-lm[8].y,2));
             const z = 0.4;
-            smoothRef.current.distance += (pinch - smoothRef.current.distance) * z;
-            smoothRef.current.x += (lm[9].x - smoothRef.current.x) * z;
-            smoothRef.current.y += (lm[9].y - smoothRef.current.y) * z;
+            smoothRef.current.distance += (pinch - smoothRef.current.distance)*z;
+            smoothRef.current.x += (lm[9].x - smoothRef.current.x)*z;
+            smoothRef.current.y += (lm[9].y - smoothRef.current.y)*z;
             handDataRef.current = {
               present: true,
               distance: smoothRef.current.distance,
-              position: { x: 1 - smoothRef.current.x, y: smoothRef.current.y }
+              position: { x: 1-smoothRef.current.x, y: smoothRef.current.y }
             };
+            // Mirror hand to mouseRef for unified control
+            mouseRef.current.x = smoothRef.current.x;
+            mouseRef.current.y = smoothRef.current.y;
           } else {
-            smoothRef.current.distance += (0.1 - smoothRef.current.distance) * 0.08;
-            smoothRef.current.x += (0.5 - smoothRef.current.x) * 0.05;
-            smoothRef.current.y += (0.5 - smoothRef.current.y) * 0.05;
-            handDataRef.current = {
-              present: false,
-              distance: smoothRef.current.distance,
-              position: { x: 1 - smoothRef.current.x, y: smoothRef.current.y }
-            };
+            smoothRef.current.distance += (0.1-smoothRef.current.distance)*0.08;
+            smoothRef.current.x += (0.5-smoothRef.current.x)*0.05;
+            smoothRef.current.y += (0.5-smoothRef.current.y)*0.05;
+            handDataRef.current = { present: false, distance: smoothRef.current.distance,
+              position: { x:1-smoothRef.current.x, y:smoothRef.current.y } };
           }
         }
         detect();
-      } catch (err) { console.warn("Hand tracking unavailable:", err); }
+      } catch(err) { console.warn("Hand tracking unavailable:", err); }
     }
     init();
     return () => {
@@ -397,104 +394,87 @@ export default function Home() {
     };
   }, [mode]);
 
-  const btnStyle = {
-    display:"flex", alignItems:"center", gap:8,
-    padding:"10px 20px",
-    background:"rgba(255,255,255,0.9)",
-    border:"1px solid rgba(0,0,0,0.1)",
-    borderRadius:"1rem",
-    boxShadow:"0 1px 4px rgba(0,0,0,0.08)",
-    cursor:"pointer", fontSize:12,
-    fontWeight:600, fontFamily:"Inter, system-ui, sans-serif",
-    color:"#333", letterSpacing:"0.05em",
+  const btn = {
+    display:"flex", alignItems:"center", gap:8, padding:"10px 20px",
+    background:"rgba(255,255,255,0.92)", border:"1px solid rgba(0,0,0,0.1)",
+    borderRadius:"1rem", boxShadow:"0 1px 4px rgba(0,0,0,0.08)",
+    cursor:"pointer", fontSize:12, fontWeight:600,
+    fontFamily:"Inter,system-ui,sans-serif", color:"#333", letterSpacing:"0.05em",
   };
 
   return (
-    <div style={{ position:"relative", width:"100vw", height:"100vh",
-                  background:"#fff", overflow:"hidden" }}>
+    <div style={{ position:"relative", width:"100vw", height:"100vh", background:"#fff", overflow:"hidden" }}>
       <div style={{ position:"absolute", inset:0 }}>
-        <Canvas
-          camera={{ position:[0, 0, 65], fov:50 }}
-          gl={{ antialias:true, alpha:true, powerPreference:"high-performance" }}
-          dpr={[1, 2]}
-        >
+        <Canvas camera={{ position:[0,0,65], fov:50 }}
+          gl={{ antialias:true, alpha:true, powerPreference:"high-performance" }} dpr={[1,2]}>
           <color attach="background" args={["#ffffff"]} />
           <fog attach="fog" args={["#ffffff", 50, 140]} />
           <ambientLight intensity={2} />
-          <directionalLight position={[10, 20, 20]} intensity={2.5} />
+          <directionalLight position={[10,20,20]} intensity={2.5} />
           <Suspense fallback={null}>
             <CameraRig
-              targetZ={sceneMode === "system" ? 65 : 22}
-              targetFov={sceneMode === "system" ? 50 : 38}
+              camTarget={camTarget.current}
+              lookTarget={lookTarget.current}
+              fovTarget={fovTarget.current}
             />
-            {sceneMode === "system" ? (
-              <SystemView
-                handDataRef={handDataRef}
-                onSelect={handleSelectPlanet}
-                didDragRef={didDragRef}
-              />
-            ) : (
-              <DetailView
-                planetId={selectedPlanet}
-                handDataRef={handDataRef}
-                onImageClick={setFullscreen}
-              />
-            )}
+            <Scene
+              mouseRef={mouseRef}
+              selectedPlanet={selectedPlanet}
+              onSelect={handleSelect}
+              didDragRef={didDragRef}
+              onImageClick={setFullscreen}
+            />
             <Environment preset="studio" />
           </Suspense>
         </Canvas>
       </div>
 
+      {/* Mode toggle */}
       <div style={{ position:"fixed", top:24, right:24, zIndex:10 }}>
-        <button onClick={() => setMode(m => m === "mouse" ? "hand" : "mouse")} style={btnStyle}>
-          <span style={{ fontSize:16 }}>{mode === "mouse" ? "🖱️" : "✋"}</span>
-          {mode === "mouse" ? "MOUSE MODE" : "HAND MODE"}
+        <button onClick={() => setMode(m => m==="mouse"?"hand":"mouse")} style={btn}>
+          <span style={{fontSize:16}}>{mode==="mouse"?"🖱️":"✋"}</span>
+          {mode==="mouse"?"MOUSE MODE":"HAND MODE"}
         </button>
       </div>
 
-      {sceneMode === "detail" && (
+      {/* Back */}
+      {selectedPlanet !== null && (
         <div style={{ position:"fixed", top:24, left:24, zIndex:10 }}>
-          <button onClick={handleBack} style={btnStyle}>← ALL SPHERES</button>
+          <button onClick={handleBack} style={btn}>← ALL SPHERES</button>
         </div>
       )}
 
-      <div style={{ position:"absolute", top:24,
-                    left: sceneMode === "detail" ? 180 : 24, zIndex:10 }}>
-        <p style={{ paddingLeft:8, fontSize:10, fontWeight:700,
-                    letterSpacing:"0.1em", color:"rgb(163,163,163)",
-                    textTransform:"uppercase", fontFamily:"Inter, system-ui, sans-serif" }}>
-          {sceneMode === "detail"
-            ? "Drag · Scroll to zoom · Click image to open"
-            : "Click a sphere to explore · Drag to rotate"}
+      {/* Hint */}
+      <div style={{ position:"absolute", top:24, left: selectedPlanet!==null ? 180 : 24, zIndex:10 }}>
+        <p style={{ paddingLeft:8, fontSize:10, fontWeight:700, letterSpacing:"0.1em",
+          color:"rgb(163,163,163)", textTransform:"uppercase", fontFamily:"Inter,system-ui,sans-serif" }}>
+          {selectedPlanet !== null
+            ? "Drag to rotate · Click image to open · ← to go back"
+            : "Drag to rotate · Click a sphere to explore"}
         </p>
       </div>
 
+      {/* Camera preview */}
       {mode === "hand" && (
-        <div style={{
-          position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)",
+        <div style={{ position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)",
           width:240, height:135, borderRadius:"1.8rem", overflow:"hidden",
-          boxShadow:"0 20px 40px -10px rgba(0,0,0,0.1)",
-          border:"5px solid white", background:"white",
-          opacity: cameraReady ? 1 : 0.3, transition:"opacity 0.5s", zIndex:10
-        }}>
-          <video ref={videoRef} playsInline muted
-            style={{ display:"none" }} width={240} height={135} />
+          boxShadow:"0 20px 40px -10px rgba(0,0,0,0.1)", border:"5px solid white",
+          background:"white", opacity:cameraReady?1:0.3, transition:"opacity 0.5s", zIndex:10 }}>
+          <video ref={videoRef} playsInline muted style={{display:"none"}} width={240} height={135}/>
           <canvas ref={cameraCanvasRef} width={240} height={135}
-            style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+            style={{width:"100%",height:"100%",objectFit:"cover"}}/>
         </div>
       )}
 
+      {/* Fullscreen modal */}
       {fullscreen && (
         <div onClick={() => setFullscreen(null)} style={{
-          position:"fixed", inset:0,
-          background:"rgba(255,255,255,0.97)",
+          position:"fixed", inset:0, background:"rgba(255,255,255,0.97)",
           display:"flex", alignItems:"center", justifyContent:"center",
           zIndex:999, cursor:"zoom-out",
-          animation:"zoomIn 0.2s cubic-bezier(0.34,1.56,0.64,1)"
-        }}>
+          animation:"zoomIn 0.2s cubic-bezier(0.34,1.56,0.64,1)" }}>
           <style>{`@keyframes zoomIn{from{opacity:0;transform:scale(0.7)}to{opacity:1;transform:scale(1)}}`}</style>
-          <img src={fullscreen} alt=""
-            style={{ maxWidth:"88vw", maxHeight:"88vh", objectFit:"contain" }} />
+          <img src={fullscreen} alt="" style={{maxWidth:"88vw",maxHeight:"88vh",objectFit:"contain"}}/>
         </div>
       )}
     </div>
