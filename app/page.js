@@ -13,14 +13,14 @@ const N_PREV = 50; // tiles in system view
 
 // Dramatic solar system — big planets, deep Z variation, reference image 2 scale
 const LAYOUT = [
-  { pos:[-42, 22,  0], r:12 },
-  { pos:[ 22, 34,  0], r:18 },
-  { pos:[ 58, 12,  0], r: 9 },
-  { pos:[-26,-30,  0], r:20 },
-  { pos:[ 44,-28,  0], r:11 },
-  { pos:[ 64,-10,  0], r: 8 },
-  { pos:[-64,  2,  0], r:14 },
-  { pos:[  8, -2,  0], r:16 },
+  { pos:[-42, 22,-12], r:12 },
+  { pos:[ 22, 34,  8], r:18 },
+  { pos:[ 58, 12,-20], r: 9 },
+  { pos:[-26,-30, 10], r:20 },
+  { pos:[ 44,-28, -6], r:11 },
+  { pos:[ 64,-10, 16], r: 8 },
+  { pos:[-64,  2, -8], r:14 },
+  { pos:[  8, -2, 22], r:16 },
 ];
 
 const PLANETS = RANGES.map(([s,e], i) => {
@@ -38,7 +38,7 @@ function fib(n, r) {
   });
 }
 const SYS_POS = PLANETS.map(p => fib(N_PREV, p.r));
-const DET_POS = PLANETS.map(p => fib(p.fullUrls.length, 7.0));
+const DET_POS = PLANETS.map(p => fib(p.fullUrls.length, p.r));
 
 const HC=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
 
@@ -194,25 +194,28 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
     // ── CAMERA TARGET: computed from WORLD POSITION every frame ────
     // This is the key fix — world position accounts for system group rotation
     // Camera always flies to where the planet ACTUALLY IS, not where it started
-   if (sel !== -1 && pRefs.current[sel]) {
+ if (sel !== -1 && pRefs.current[sel]) {
   pRefs.current[sel].getWorldPosition(_pw.current);
   _dir.current.copy(_pw.current).normalize();
   if (_dir.current.lengthSq() < 0.001) _dir.current.set(0, 0, 1);
- const pr = PLANETS[sel].r;
-if (stageRef.current === 1) {
-  // Stage 1: whole planet fills screen — camera at 2.2x radius
-  camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr * 2.2);
-  fovRef.current = 52;
+  const pr = PLANETS[sel].r;
+  if (stageRef.current === 1) {
+    // Fixed buffer beyond edge — bigger planets appear bigger
+    camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr + 22);
+    lookRef.current.copy(_pw.current);
+    fovRef.current = 48;
+  } else {
+    // Inside: camera at center, look toward world origin direction
+    camRef.current.copy(_pw.current);
+    // Look away from world center so camera has a defined direction
+    const lookTarget = _pw.current.clone().add(_dir.current.clone().negate().multiplyScalar(20));
+    lookRef.current.copy(lookTarget);
+    fovRef.current = 80;
+  }
 } else {
-  // Stage 2: INSIDE the sphere — camera moves to planet center, images surround you
-  camRef.current.copy(_pw.current);
-  fovRef.current = 75;
-}
-  lookRef.current.copy(_pw.current);
-} else {
- camRef.current.set(0, 0, 100);
+  camRef.current.set(0, 0, 100);
   lookRef.current.set(0, 0, 0);
- fovRef.current = 65;
+  fovRef.current = 65;
 }
 
     // ── HAND DWELL: hold hand over planet to enter it ──────────────
@@ -281,9 +284,9 @@ if (stageRef.current === 1) {
         const urls   = isSel ? p.fullUrls  : p.prevUrls;
         const fpos   = isSel ? DET_POS[i]  : SYS_POS[i];
         // Tile scale: proportional to planet radius in system view, standard in detail
-        const tsc    = isSel
-          ? [1.6, 2.24, 1]
-          : [(p.r / 4.5) * 1.32, (p.r / 4.5) * 1.85, 1];
+      const tsc = isSel
+  ? [(p.r / 4.5) * 1.32, (p.r / 4.5) * 1.85, 1]
+  : [(p.r / 4.5) * 1.32, (p.r / 4.5) * 1.85, 1];
         // Opacity: full when selected, near-invisible when another is selected, 90% in system
         const op     = anysel && !isSel ? 0.04 : (isSel ? 1.0 : 0.9);
         return (
