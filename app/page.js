@@ -9,18 +9,18 @@ const lo = i => `https://res.cloudinary.com/${CLOUD}/image/upload/w_220,q_35,f_a
 const hi = i => `https://res.cloudinary.com/${CLOUD}/image/upload/q_auto,f_auto/img${String(i).padStart(5,"0")}.jpg`;
 
 const RANGES = [[0,64],[65,129],[130,194],[195,259],[260,324],[325,389],[390,454],[455,520]];
-const N_PREV = 40; // tiles in system view
+const N_PREV = 50; // tiles in system view
 
 // Dramatic solar system — big planets, deep Z variation, reference image 2 scale
 const LAYOUT = [
-  { pos:[-36, 14,-10], r:5.0 },
-  { pos:[ 10, 24,  8], r:6.5 },
-  { pos:[ 42,  8,-18], r:3.5 },
-  { pos:[-22,-24,  6], r:7.0 },
-  { pos:[ 18,-20, -6], r:4.5 },
-  { pos:[ 46,-16, 14], r:3.0 },
-  { pos:[-46,  6,  4], r:4.8 },
-  { pos:[ -4,  2, 20], r:6.0 },
+  { pos:[-55, 18,-15], r:7.5 },
+  { pos:[ 12, 38, 10], r:9.0 },
+  { pos:[ 62, 12,-22], r:5.0 },
+  { pos:[-30,-36,  8], r:10.0 },
+  { pos:[ 25,-32, -8], r:6.5 },
+  { pos:[ 65,-22, 18], r:4.2 },
+  { pos:[-65,  8,  6], r:7.0 },
+  { pos:[ -5,  2, 28], r:8.5 },
 ];
 
 const PLANETS = RANGES.map(([s,e], i) => {
@@ -67,19 +67,11 @@ function Tile({ pos, url, opacity, sc, onClick }) {
 // FrontSide → renders near hemisphere facing camera
 // Writes depth → blocks distant planets from showing through tile gaps
 // Near hemisphere appears white (same as white background) = invisible seam
-function Occluder({ r }) {
-  return (
-    <mesh renderOrder={-1}>
-      <sphereGeometry args={[r * 0.87, 28, 28]} />
-      <meshBasicMaterial color="#ffffff" depthWrite={true} />
-    </mesh>
-  );
-}
 
 // ── CAMERA RIG: lerps position + lookAt toward targets ────────────────
 function CamRig({ camRef, lookRef, fovRef }) {
   const { camera } = useThree();
-  const cPos  = useRef(new THREE.Vector3(0,0,95));
+  const cPos = useRef(new THREE.Vector3(0,0,120));
   const cLook = useRef(new THREE.Vector3(0,0,0));
   useFrame(() => {
     cPos.current.lerp(camRef.current, 0.048);
@@ -213,9 +205,9 @@ function Scene({ inputRef, selRef, selState, mode, onSelect, onImageClick, camRe
       lookRef.current.copy(_pw.current);
       fovRef.current = 42;
     } else {
-      camRef.current.set(0, 0, 95);
+      camRef.current.set(0, 0, 120);
       lookRef.current.set(0, 0, 0);
-      fovRef.current = 56;
+      fovRef.current = 60;
     }
 
     // ── HAND DWELL: hold hand over planet to enter it ──────────────
@@ -295,7 +287,7 @@ function Scene({ inputRef, selRef, selState, mode, onSelect, onImageClick, camRe
             ref={el => { pRefs.current[i] = el; }}
             position={p.pos}
           >
-            <Occluder r={isSel ? 7.0 : p.r} />
+          
             {urls.map((url, j) => (
               <Tile
                 key={`${i}-${j}-${isSel ? "hi" : "lo"}`}
@@ -335,9 +327,9 @@ export default function Home() {
   const [mode,       setMode]       = useState("mouse");
   const [camReady,   setCamReady]   = useState(false);
 
-  const camRef  = useRef(new THREE.Vector3(0, 0, 95));
-  const lookRef = useRef(new THREE.Vector3(0, 0, 0));
-  const fovRef  = useRef(56);
+ const camRef  = useRef(new THREE.Vector3(0, 0, 120));
+const lookRef = useRef(new THREE.Vector3(0, 0, 0));
+const fovRef  = useRef(60);
 
   const handleSelect = idx => {
     selRef.current = idx;
@@ -472,12 +464,12 @@ export default function Home() {
     <div style={{position:"relative",width:"100vw",height:"100vh",background:"#fff",overflow:"hidden"}}>
       <div style={{position:"absolute",inset:0}}>
         <Canvas
-          camera={{ position:[0,0,95], fov:56 }}
+          camera={{ position:[0,0,120], fov:60 }}
           gl={{ antialias:true, alpha:true, powerPreference:"high-performance" }}
           dpr={[1, 2]}
         >
           <color attach="background" args={["#ffffff"]} />
-          <fog attach="fog" args={["#ffffff", 80, 210]} />
+          <fog attach="fog" args={["#ffffff", 100, 260]} />
           <ambientLight intensity={2} />
           <directionalLight position={[10,20,20]} intensity={2.5} />
           <Suspense fallback={null}>
