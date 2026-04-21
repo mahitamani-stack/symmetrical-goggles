@@ -87,8 +87,7 @@ function CamRig({ camRef, lookRef, fovRef }) {
 }
 
 // ── SCENE: all 3D logic ───────────────────────────────────────────────
-function Scene({ inputRef, selRef, selState, mode, onSelect, onImageClick, camRef, lookRef, fovRef }) {
-  const sysRef  = useRef();
+function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, onDeepen, onImageClick, camRef, lookRef, fovRef }) {  const sysRef  = useRef();
   const pRefs   = useRef([]);
   const spins   = useRef(PLANETS.map((_,i) => i*0.4));
   // Anchor: captured inside useFrame on justDown — ALWAYS has correct mesh rotation
@@ -195,20 +194,26 @@ function Scene({ inputRef, selRef, selState, mode, onSelect, onImageClick, camRe
     // ── CAMERA TARGET: computed from WORLD POSITION every frame ────
     // This is the key fix — world position accounts for system group rotation
     // Camera always flies to where the planet ACTUALLY IS, not where it started
-    if (sel !== -1 && pRefs.current[sel]) {
-      pRefs.current[sel].getWorldPosition(_pw.current);
-      // Approach from the radial direction (from world origin toward planet)
-      _dir.current.copy(_pw.current).normalize();
-      if (_dir.current.lengthSq() < 0.001) _dir.current.set(0, 0, 1);
-      // Position camera outside planet looking at it — feel like planetarium from outside
-      camRef.current.copy(_pw.current).addScaledVector(_dir.current, 12);
-      lookRef.current.copy(_pw.current);
-      fovRef.current = 42;
-    } else {
-      camRef.current.set(0, 0, 120);
-      lookRef.current.set(0, 0, 0);
-      fovRef.current = 60;
-    }
+   if (sel !== -1 && pRefs.current[sel]) {
+  pRefs.current[sel].getWorldPosition(_pw.current);
+  _dir.current.copy(_pw.current).normalize();
+  if (_dir.current.lengthSq() < 0.001) _dir.current.set(0, 0, 1);
+  const pr = PLANETS[sel].r;
+  if (stageRef.current === 1) {
+    // Stage 2: outside planet, see whole sphere
+    camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr * 3.0);
+    fovRef.current = 40;
+  } else {
+    // Stage 3: close in, images fill screen like planetarium
+    camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr * 1.15);
+    fovRef.current = 65;
+  }
+  lookRef.current.copy(_pw.current);
+} else {
+  camRef.current.set(0, 0, 120);
+  lookRef.current.set(0, 0, 0);
+  fovRef.current = 60;
+}
 
     // ── HAND DWELL: hold hand over planet to enter it ──────────────
     if (mode === "hand" && sel === -1 && inp.handPresent) {
@@ -293,12 +298,14 @@ function Scene({ inputRef, selRef, selState, mode, onSelect, onImageClick, camRe
                 key={`${i}-${j}-${isSel ? "hi" : "lo"}`}
                 pos={fpos[j]} url={url} opacity={op} sc={tsc}
                 onClick={
-                  !anysel
-                    ? () => { if (!inputRef.current.dragging) onSelect(i); }
-                    : isSel
-                    ? () => onImageClick(url)
-                    : undefined
-                }
+  !anysel
+    ? () => { if (!inputRef.current.dragging) onSelect(i); }
+    : isSel && stage === 1
+    ? () => { if (!inputRef.current.dragging) onDeepen(); }
+    : isSel && stage === 2
+    ? () => onImageClick(url)
+    : undefined
+}
               />
             ))}
           </group>
@@ -320,8 +327,10 @@ export default function Home() {
 
   // selRef for useFrame logic (no closure staleness)
   // selState for React rendering (triggers re-render)
-  const selRef = useRef(-1);
-  const [selState, setSelState] = useState(-1);
+  const selRef   = useRef(-1);
+const stageRef = useRef(0); // 0=system 1=planet-overview 2=inside
+const [selState, setSelState] = useState(-1);
+const [stage,    setStage]    = useState(0);
 
   const [fullscreen, setFullscreen] = useState(null);
   const [mode,       setMode]       = useState("mouse");
@@ -332,16 +341,31 @@ const lookRef = useRef(new THREE.Vector3(0, 0, 0));
 const fovRef  = useRef(60);
 
   const handleSelect = idx => {
-    selRef.current = idx;
-    setSelState(idx);
-    inputRef.current = { ...inputRef.current, down:false, dragging:false };
-  };
+  selRef.current  = idx;
+  stageRef.current = 1;
+  setSelState(idx);
+  setStage(1);
+  inputRef.current = { ...inputRef.current, down:false, dragging:false };
+};
 
-  const handleBack = () => {
-    selRef.current = -1;
+const handleDeepen = () => {
+  stageRef.current = 2;
+  setStage(2);
+  inputRef.current = { ...inputRef.current, down:false, dragging:false };
+};
+
+const handleBack = () => {
+  if (stageRef.current === 2) {
+    stageRef.current = 1;
+    setStage(1);
+  } else {
+    selRef.current   = -1;
+    stageRef.current = 0;
     setSelState(-1);
-    inputRef.current = { ...inputRef.current, down:false, dragging:false };
-  };
+    setStage(0);
+  }
+  inputRef.current = { ...inputRef.current, down:false, dragging:false };
+};
 
   // ── Mouse events ───────────────────────────────────────────────────
   useEffect(() => {
@@ -475,16 +499,19 @@ const fovRef  = useRef(60);
           <Suspense fallback={null}>
             <CamRig camRef={camRef} lookRef={lookRef} fovRef={fovRef} />
             <Scene
-              inputRef={inputRef}
-              selRef={selRef}
-              selState={selState}
-              mode={mode}
-              onSelect={handleSelect}
-              onImageClick={setFullscreen}
-              camRef={camRef}
-              lookRef={lookRef}
-              fovRef={fovRef}
-            />
+  inputRef={inputRef}
+  selRef={selRef}
+  stageRef={stageRef}
+  selState={selState}
+  stage={stage}
+  mode={mode}
+  onSelect={handleSelect}
+  onDeepen={handleDeepen}
+  onImageClick={setFullscreen}
+  camRef={camRef}
+  lookRef={lookRef}
+  fovRef={fovRef}
+/>
             <Environment preset="studio" />
           </Suspense>
         </Canvas>
@@ -499,24 +526,26 @@ const fovRef  = useRef(60);
       </div>
 
       {/* Back */}
-      {selState !== -1 && (
-        <div style={{position:"fixed",top:24,left:24,zIndex:10}}>
-          <button onClick={handleBack} style={btn}>← ALL PLANETS</button>
-        </div>
-      )}
+      {stage > 0 && (
+  <div style={{position:"fixed",top:24,left:24,zIndex:10}}>
+    <button onClick={handleBack} style={btn}>
+      {stage === 2 ? "← PLANET VIEW" : "← ALL PLANETS"}
+    </button>
+  </div>
+)}
 
       {/* Hint */}
       <div style={{position:"absolute",top:24,left:selState!==-1?180:24,zIndex:10}}>
         <p style={{paddingLeft:8,fontSize:10,fontWeight:700,letterSpacing:"0.1em",
           color:"rgb(163,163,163)",textTransform:"uppercase",fontFamily:"Inter,system-ui,sans-serif"}}>
-          {selState !== -1
-            ? mode==="hand"
-              ? "Hold hand still at centre · hover image to fullscreen"
-              : "Drag to rotate · Click image to open fullscreen"
-            : mode==="hand"
-              ? "Move hand to rotate · Hold over planet to enter"
-              : "Drag to rotate · Click planet to enter"
-          }
+         {stage === 2
+  ? "Drag to rotate · Click image to open"
+  : stage === 1
+  ? "Click sphere to fly inside · Drag to rotate"
+  : mode==="hand"
+  ? "Move hand to rotate · Hold over planet to enter"
+  : "Drag to rotate · Click planet to enter"
+}
         </p>
       </div>
 
