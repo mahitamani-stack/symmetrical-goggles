@@ -13,14 +13,14 @@ const N_PREV = 50; // tiles in system view
 
 // Dramatic solar system — big planets, deep Z variation, reference image 2 scale
 const LAYOUT = [
-  { pos:[-55, 18,-15], r:7.5 },
-  { pos:[ 12, 38, 10], r:9.0 },
-  { pos:[ 62, 12,-22], r:5.0 },
-  { pos:[-30,-36,  8], r:10.0 },
-  { pos:[ 25,-32, -8], r:6.5 },
-  { pos:[ 65,-22, 18], r:4.2 },
-  { pos:[-65,  8,  6], r:7.0 },
-  { pos:[ -5,  2, 28], r:8.5 },
+  { pos:[-32, 16,  0], r:12 },
+  { pos:[ 10, 30,  4], r:18 },
+  { pos:[ 40,  8, -6], r: 9 },
+  { pos:[-20,-28,  4], r:20 },
+  { pos:[ 18,-22, -4], r:11 },
+  { pos:[ 42,-16,  6], r: 8 },
+  { pos:[-42,  6,  2], r:14 },
+  { pos:[ -4,  0,  8], r:16 },
 ];
 
 const PLANETS = RANGES.map(([s,e], i) => {
@@ -71,7 +71,7 @@ function Tile({ pos, url, opacity, sc, onClick }) {
 // ── CAMERA RIG: lerps position + lookAt toward targets ────────────────
 function CamRig({ camRef, lookRef, fovRef }) {
   const { camera } = useThree();
-  const cPos = useRef(new THREE.Vector3(0,0,120));
+  const cPos = useRef(new THREE.Vector3(0,0,100));
   const cLook = useRef(new THREE.Vector3(0,0,0));
   useFrame(() => {
     cPos.current.lerp(camRef.current, 0.048);
@@ -210,9 +210,9 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
   }
   lookRef.current.copy(_pw.current);
 } else {
-  camRef.current.set(0, 0, 120);
+ camRef.current.set(0, 0, 100);
   lookRef.current.set(0, 0, 0);
-  fovRef.current = 60;
+ fovRef.current = 65;
 }
 
     // ── HAND DWELL: hold hand over planet to enter it ──────────────
@@ -336,7 +336,7 @@ const [stage,    setStage]    = useState(0);
   const [mode,       setMode]       = useState("mouse");
   const [camReady,   setCamReady]   = useState(false);
 
- const camRef  = useRef(new THREE.Vector3(0, 0, 120));
+const camRef  = useRef(new THREE.Vector3(0, 0, 100));
 const lookRef = useRef(new THREE.Vector3(0, 0, 0));
 const fovRef  = useRef(60);
 
@@ -488,12 +488,12 @@ const handleBack = () => {
     <div style={{position:"relative",width:"100vw",height:"100vh",background:"#fff",overflow:"hidden"}}>
       <div style={{position:"absolute",inset:0}}>
         <Canvas
-          camera={{ position:[0,0,120], fov:60 }}
+          camera={{ position:[0,0,100], fov:65 }}
           gl={{ antialias:true, alpha:true, powerPreference:"high-performance" }}
           dpr={[1, 2]}
         >
           <color attach="background" args={["#ffffff"]} />
-          <fog attach="fog" args={["#ffffff", 100, 260]} />
+          <fog attach="fog" args={["#ffffff", 90, 230]} />
           <ambientLight intensity={2} />
           <directionalLight position={[10,20,20]} intensity={2.5} />
           <Suspense fallback={null}>
