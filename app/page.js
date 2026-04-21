@@ -13,14 +13,14 @@ const N_PREV = 50; // tiles in system view
 
 // Dramatic solar system — big planets, deep Z variation, reference image 2 scale
 const LAYOUT = [
-  { pos:[-32, 16,  0], r:12 },
-  { pos:[ 10, 30,  4], r:18 },
-  { pos:[ 40,  8, -6], r: 9 },
-  { pos:[-20,-28,  4], r:20 },
-  { pos:[ 18,-22, -4], r:11 },
-  { pos:[ 42,-16,  6], r: 8 },
-  { pos:[-42,  6,  2], r:14 },
-  { pos:[ -4,  0,  8], r:16 },
+  { pos:[-42, 22,  0], r:12 },
+  { pos:[ 22, 34,  0], r:18 },
+  { pos:[ 58, 12,  0], r: 9 },
+  { pos:[-26,-30,  0], r:20 },
+  { pos:[ 44,-28,  0], r:11 },
+  { pos:[ 64,-10,  0], r: 8 },
+  { pos:[-64,  2,  0], r:14 },
+  { pos:[  8, -2,  0], r:16 },
 ];
 
 const PLANETS = RANGES.map(([s,e], i) => {
@@ -74,8 +74,8 @@ function CamRig({ camRef, lookRef, fovRef }) {
   const cPos = useRef(new THREE.Vector3(0,0,100));
   const cLook = useRef(new THREE.Vector3(0,0,0));
   useFrame(() => {
-    cPos.current.lerp(camRef.current, 0.048);
-    cLook.current.lerp(lookRef.current, 0.048);
+    cPos.current.lerp(camRef.current, 0.06);
+cLook.current.lerp(lookRef.current, 0.06);
     camera.position.copy(cPos.current);
     camera.lookAt(cLook.current);
     if (Math.abs(camera.fov - fovRef.current) > 0.08) {
@@ -198,16 +198,16 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
   pRefs.current[sel].getWorldPosition(_pw.current);
   _dir.current.copy(_pw.current).normalize();
   if (_dir.current.lengthSq() < 0.001) _dir.current.set(0, 0, 1);
-  const pr = PLANETS[sel].r;
-  if (stageRef.current === 1) {
-    // Stage 2: outside planet, see whole sphere
-    camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr * 3.0);
-    fovRef.current = 40;
-  } else {
-    // Stage 3: close in, images fill screen like planetarium
-    camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr * 1.15);
-    fovRef.current = 65;
-  }
+ const pr = PLANETS[sel].r;
+if (stageRef.current === 1) {
+  // Stage 1: whole planet fills screen — camera at 2.2x radius
+  camRef.current.copy(_pw.current).addScaledVector(_dir.current, pr * 2.2);
+  fovRef.current = 52;
+} else {
+  // Stage 2: INSIDE the sphere — camera moves to planet center, images surround you
+  camRef.current.copy(_pw.current);
+  fovRef.current = 75;
+}
   lookRef.current.copy(_pw.current);
 } else {
  camRef.current.set(0, 0, 100);
