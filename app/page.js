@@ -910,8 +910,8 @@ const handleBack = () => {
           }}>‹</button>
 
           {/* Image */}
-          <img src={fullscreen.url} alt=""
-            style={{maxWidth:"80vw",maxHeight:"84vh",objectFit:"contain"}}/>
+         <img src={fullscreen.url} alt=""
+            style={{width:"70vw",height:"70vh",objectFit:"contain"}}/>
 
           {/* Next arrow */}
           <button onClick={() => {
