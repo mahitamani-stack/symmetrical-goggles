@@ -77,12 +77,14 @@ function CamRig({ camRef, lookRef, fovRef }) {
   const { camera } = useThree();
   const cPos = useRef(new THREE.Vector3(0,0,100));
   const cLook = useRef(new THREE.Vector3(0,0,0));
+  // eslint-disable-next-line react-hooks/immutability
   useFrame(() => {
     cPos.current.lerp(camRef.current, 0.06);
 cLook.current.lerp(lookRef.current, 0.06);
     camera.position.copy(cPos.current);
     camera.lookAt(cLook.current);
     if (Math.abs(camera.fov - fovRef.current) > 0.08) {
+      // eslint-disable-next-line react-hooks/immutability
       camera.fov = THREE.MathUtils.lerp(camera.fov, fovRef.current, 0.04);
       camera.updateProjectionMatrix();
     }
@@ -363,6 +365,7 @@ const openImage = (url, planetIdx) => {
 };
   const [mode,       setMode]       = useState("mouse");
   const [camReady,   setCamReady]   = useState(false);
+  const [cursor, setCursor] = useState({ visible: false, x: 0, y: 0, type: 'default' });
 
 const camRef  = useRef(new THREE.Vector3(0, 0, 100));
 const lookRef = useRef(new THREE.Vector3(0, 0, 0));
@@ -416,6 +419,14 @@ const handleBack = () => {
           stageRef.current = 2;
           setSelState(targetPlanet);
           setStage(2);
+          // NEW: Center camera on target planet
+          camRef.current.set(0, 0, 50);
+          lookRef.current.set(...PLANETS[targetPlanet].pos);
+          fovRef.current = 50;
+        } else {
+          stageRef.current = 2;
+          setStage(2);
+          fovRef.current = 50;
         }
       }
     };
@@ -479,8 +490,10 @@ const handleBack = () => {
         stream = await navigator.mediaDevices.getUserMedia(
           { video:{ width:240, height:135, facingMode:"user" } });
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-        setCamReady(true);
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play().catch(e => console.warn("Video play failed:", e));
+          setCamReady(true);
+        };
         const ctx = cameraCanvasRef.current.getContext("2d");
         let lastTime = -1;
         function detect() {
@@ -490,14 +503,31 @@ const handleBack = () => {
           lastTime = v.currentTime;
           ctx.save(); ctx.translate(240, 0); ctx.scale(-1, 1);
           ctx.drawImage(v, 0, 0, 240, 135); ctx.restore();
-          const R = hl.detectForVideo(v, performance.now());
+          const R = hl.detectForVideo(v, v.currentTime * 1000);
          // Helper: is hand a fist? (all fingertips below their MCP joints)
           const isFist = lm => {
             const tips = [8,12,16,20], mcps = [5,9,13,17];
-            return tips.every((t,i) => lm[t].y > lm[mcps[i]].y);
+            return tips.every((t,i) => lm[t].y > lm[mcps[i]].y && Math.abs(lm[t].x - lm[mcps[i]].x) < 0.15);
           };
           // Helper: hand size (wrist to middle MCP) as depth proxy
           const handSize = lm => Math.hypot(lm[9].x-lm[0].x, lm[9].y-lm[0].y);
+
+          // NEW: Helper: is only right index finger extended?
+          const isSingleIndex = lm => {
+            const indexTip = lm[8], indexMcp = lm[5];
+            const otherTips = [12, 16, 20];
+            const otherMcps = [9, 13, 17];
+            const thumbTip = lm[4];
+            const isIndexExtended = indexTip.y < indexMcp.y;
+            const areOthersRetracted = otherTips.every((t, i) => lm[t].y > lm[otherMcps[i]].y);
+            const isThumbOpen = thumbTip.z > lm[2].z - 0.05;
+            return isIndexExtended && areOthersRetracted && isThumbOpen;
+          };
+
+          // NEW: Helper: calculate 3D distance between two points (for pinch detection)
+          const pinchDistance = (lm, t1, t2) => {
+            return Math.hypot(lm[t1].x - lm[t2].x, lm[t1].y - lm[t2].y, (lm[t1].z - lm[t2].z) * 0.5);
+          };
 
           if (R.landmarks?.length > 0) {
             // Draw all hands
@@ -537,6 +567,29 @@ const handleBack = () => {
             const rFist = rightHand ? isFist(rightHand) : false;
             const bothFists = lFist && rFist;
 
+            // NEW: Additional gesture detection
+            const rIndex = rightHand ? isSingleIndex(rightHand) : false;
+            const rPinch = rightHand ? pinchDistance(rightHand, 4, 8) < 0.08 : false;
+
+            // NEW: Velocity tracking for swipe gestures
+            const now = performance.now();
+            const dt = now - smoothRef.current.t;
+            if (dt > 0 && smoothRef.current.prevX !== undefined) {
+              smoothRef.current.velX = (smoothRef.current.x - smoothRef.current.prevX) / (dt / 16);
+              smoothRef.current.velY = (smoothRef.current.y - smoothRef.current.prevY) / (dt / 16);
+            }
+            smoothRef.current.prevX = smoothRef.current.x;
+            smoothRef.current.prevY = smoothRef.current.y;
+            smoothRef.current.t = now;
+
+            // NEW: Update cursor position
+            setCursor({
+              visible: true,
+              x: smoothRef.current.x * 100,
+              y: smoothRef.current.y * 100,
+              type: rIndex ? 'index' : (bothFists ? 'fist' : 'hand')
+            });
+
             // Left hand Y → density (0.5=normal, 0=tight, 1=spread)
             const densityY = leftHand ? leftHand[9].y : 0.5;
             // Right hand size → scale proxy (larger = closer = bigger scale)
@@ -553,15 +606,40 @@ const handleBack = () => {
               y: smoothRef.current.y,
               handPresent: true,
               bothFists,
+              rIndex,
+              rPinch,
+              velocityX: smoothRef.current.velX || 0,
+              velocityY: smoothRef.current.velY || 0,
               densityY,
               scaleProxy,
               depthProxy,
               panX,
             };
+
+            // NEW: Handle swipe gesture for carousel navigation
+            if (fullscreen && Math.abs(smoothRef.current.velX || 0) > 0.15) {
+              if ((smoothRef.current.velX || 0) > 0.15) {
+                // Hand moving left → show previous image
+                const prev = (fullscreen.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
+                const g = GLOBAL_IMGS[prev];
+                setFullscreen({ globalIdx: prev, url: g.url, planetIdx: g.planetIdx });
+              } else if ((smoothRef.current.velX || 0) < -0.15) {
+                // Hand moving right → show next image
+                const next = (fullscreen.globalIdx + 1) % GLOBAL_IMGS.length;
+                const g = GLOBAL_IMGS[next];
+                setFullscreen({ globalIdx: next, url: g.url, planetIdx: g.planetIdx });
+              }
+            }
+
+            // NEW: Handle pinch gesture to go back
+            if (rPinch && stageRef.current > 0) {
+              handleBack();
+            }
           } else {
             smoothRef.current.x += (0.5 - smoothRef.current.x) * 0.06;
             smoothRef.current.y += (0.5 - smoothRef.current.y) * 0.06;
-            inputRef.current = { ...inputRef.current, handPresent:false, bothFists:false };
+            setCursor({ visible: false, x: 0, y: 0, type: 'default' });
+            inputRef.current = { ...inputRef.current, handPresent:false, bothFists:false, rIndex: false, rPinch: false, velocityX: 0, velocityY: 0 };
           }
         }
         detect();
@@ -573,7 +651,7 @@ const handleBack = () => {
       stream?.getTracks().forEach(t => t.stop());
       setCamReady(false);
     };
-  }, [mode]);
+  }, [mode, fullscreen, stageRef]);
 
   const btn = {
     display:"flex", alignItems:"center", gap:8, padding:"10px 20px",
@@ -657,6 +735,39 @@ const handleBack = () => {
           <video ref={videoRef} playsInline muted style={{display:"none"}} width={240} height={135}/>
           <canvas ref={cameraCanvasRef} width={240} height={135}
             style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+        </div>
+      )}
+
+      {/* Hand cursor (visible when hand detected) */}
+      {mode === "hand" && cursor.visible && (
+        <div style={{
+          position:"fixed",
+          left:`${cursor.x}%`,
+          top:`${cursor.y}%`,
+          transform:"translate(-50%, -50%)",
+          zIndex:500,
+          pointerEvents:"none"
+        }}>
+          {cursor.type === 'index' ? (
+            <div style={{
+              width:20, height:20,
+              border:"2px solid #FF6B6B",
+              borderRadius:"50%",
+              boxShadow:"0 0 12px rgba(255, 107, 107, 0.5)"
+            }}/>
+          ) : cursor.type === 'fist' ? (
+            <div style={{
+              width:24, height:24,
+              background:"rgba(255, 107, 107, 0.3)",
+              borderRadius:"50%"
+            }}/>
+          ) : (
+            <div style={{
+              width:16, height:16,
+              background:"#666",
+              borderRadius:"50%"
+            }}/>
+          )}
         </div>
       )}
 
