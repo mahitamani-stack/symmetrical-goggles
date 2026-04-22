@@ -93,7 +93,7 @@ cLook.current.lerp(lookRef.current, 0.06);
 }
 
 // ── SCENE: all 3D logic ───────────────────────────────────────────────
-function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, onDeepen, onImageClick, camRef, lookRef, fovRef }) {  const sysRef  = useRef();
+function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, onDeepen, onImageClick, camRef, lookRef, fovRef, spinToRef, fullscreen }) {  const sysRef  = useRef();
   const pRefs   = useRef([]);
   const spins   = useRef(PLANETS.map((_,i) => i*0.4));
   // Anchor: captured inside useFrame on justDown — ALWAYS has correct mesh rotation
@@ -166,11 +166,35 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
 
     if (mode === "hand") prevHand.current = { x:inp.x, y:inp.y };
 
+    const justPoked = inp.pokeClick;
+    if (justPoked) inp.pokeClick = false; // consume
+
     // ── PLANET self-spin + selected planet rotation ─────────────────
     PLANETS.forEach((_, i) => {
       const pg = pRefs.current[i];
       if (!pg) return;
-      if (i !== sel) {
+      
+      const pData = pg.userData;
+
+      // Spin-To animation when returning from full screen
+      if (spinToRef.current && i === spinToRef.current.planetIdx) {
+        const { planetIdx, localIdx } = spinToRef.current;
+        const viewDirWorld = _dir.current.clone().negate();
+        const invSysRot = sysRef.current.quaternion.clone().invert();
+        const viewDirLocal = viewDirWorld.applyQuaternion(invSysRot).normalize();
+        
+        const v = new THREE.Vector3(...DET_POS[planetIdx][localIdx]).normalize();
+        const targetQ = new THREE.Quaternion().setFromUnitVectors(v, viewDirLocal);
+        
+        pg.quaternion.slerp(targetQ, 0.08);
+        const euler = new THREE.Euler().setFromQuaternion(pg.quaternion);
+        spins.current[i] = euler.y;
+        pg.rotation.x = euler.x;
+        
+        if (v.clone().applyQuaternion(pg.quaternion).dot(viewDirLocal) > 0.999) {
+            spinToRef.current = null; // Reached target
+        }
+      } else if (i !== sel) {
         spins.current[i] += dt * (0.02 + i * 0.004);
         pg.rotation.y = spins.current[i];
         pg.rotation.x = THREE.MathUtils.lerp(pg.rotation.x, 0, 0.04);
@@ -195,21 +219,57 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
           pg.rotation.x = THREE.MathUtils.lerp(pg.rotation.x, 0, 0.02);
         }
       }
+
+      // Dynamic grid & hand mapping
+      if (i === sel) {
+        if (pData.smoothDensity === undefined) pData.smoothDensity = 1;
+        if (pData.smoothScale === undefined) pData.smoothScale = 1;
+        if (pData.smoothZ === undefined) pData.smoothZ = 1;
+        if (pData.gridMode === undefined) pData.gridMode = false;
+        if (pData.gridLerp === undefined) pData.gridLerp = 0;
+        
+        if (inp.handPresent) {
+            pData.smoothDensity += ((inp.densityY * 2) - pData.smoothDensity) * 0.1;
+            pData.smoothScale += (inp.scaleProxy - pData.smoothScale) * 0.1;
+            pData.smoothZ += (inp.depthProxy - pData.smoothZ) * 0.1;
+        } else {
+            pData.smoothDensity += (1 - pData.smoothDensity) * 0.1;
+            pData.smoothScale += (1 - pData.smoothScale) * 0.1;
+            pData.smoothZ += (1 - pData.smoothZ) * 0.1;
+        }
+        
+        pData.gridLerp += (pData.gridMode ? 0.05 : -0.05);
+        pData.gridLerp = Math.max(0, Math.min(1, pData.gridLerp));
+        
+        const r = PLANETS[i].r;
+        const children = pg.children;
+        const n = DET_POS[i].length;
+        const cols = Math.ceil(Math.sqrt(n));
+        
+        children.forEach((child, j) => {
+            const sp = DET_POS[i][j];
+            const row = Math.floor(j / cols);
+            const col = j % cols;
+            const gw = 5;
+            const gp = [ (col - cols/2 + 0.5) * gw, -(row - cols/2 + 0.5) * gw, r ]; 
+            
+            const tx = THREE.MathUtils.lerp(sp[0], gp[0], pData.gridLerp) * pData.smoothScale;
+            const ty = THREE.MathUtils.lerp(sp[1], gp[1], pData.gridLerp) * pData.smoothScale * pData.smoothDensity;
+            const tz = THREE.MathUtils.lerp(sp[2], gp[2], pData.gridLerp) * pData.smoothScale * pData.smoothZ;
+            
+            child.position.set(tx, ty, tz);
+        });
+      }
     });
 
-// ── HAND GESTURES inside planet ────────────────────────────────
+// ── HAND GESTURES / GRID TOGGLE inside planet ────────────────────────────────
     if (sel !== -1 && inp.handPresent) {
       const pg = pRefs.current[sel];
       if (pg) {
-        // Both fists → toggle grid (handled via React state below via ref)
-        // Left hand Y controls Y-spread of tiles (density)
-        // Right hand size controls tile scale
-        // These are passed as gestureRef for Scene to apply each frame
-        if (inp.bothFists) {
+        if (inp.bothFists && Date.now() - (pg.userData.lastFist||0) > 1000) {
           pg.userData.gridMode = !pg.userData.gridMode;
-          inp.bothFists = false; // consume
+          pg.userData.lastFist = Date.now();
         }
-        // Left/right hand movement rotates planet (already handled in hand rotation block)
       }
     }
     
@@ -240,8 +300,9 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
   fovRef.current = 65;
 }
 
-    // ── HAND DWELL: hold hand over planet to enter it ──────────────
-    if (mode === "hand" && sel === -1 && inp.handPresent) {
+    // ── HAND DWELL / POKE SELECTION ──────────────
+    if (mode === "hand" && inp.handPresent && !fullscreen) {
+      if (sel === -1) {
       let bestId = -1, bestD = Infinity;
       PLANETS.forEach((_, i) => {
         const pg = pRefs.current[i];
@@ -252,48 +313,56 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
         if (d < bestD) { bestD = d; bestId = i; }
       });
       if (bestD < 0.14) {
-        if (dwellId.current === bestId) {
-          if (Date.now() - dwellT.current > 1500) {
-            onSelect(bestId);
-            dwellId.current = null;
+          if (justPoked) {
+             onSelect(bestId);
+             dwellId.current = null;
+          } else {
+             if (dwellId.current === bestId) {
+               if (Date.now() - dwellT.current > 1500) {
+                 onSelect(bestId);
+                 dwellId.current = null;
+               }
+             } else {
+               dwellId.current = bestId;
+               dwellT.current = Date.now();
+             }
           }
-        } else {
-          dwellId.current = bestId;
-          dwellT.current = Date.now();
-        }
       } else {
         dwellId.current = null;
       }
-    }
-
-    // ── HAND DWELL: hold hand still in planet view to fullscreen ───
-    if (mode === "hand" && sel !== -1 && inp.handPresent) {
-      const d = Math.hypot(inp.x - 0.5, inp.y - 0.5);
-      if (d < 0.12) {
-        if (dwellId.current === "img") {
-          if (Date.now() - dwellT.current > 1500) {
-            // Fullscreen the tile closest to camera view direction
-            const pg = pRefs.current[sel];
-            if (pg) {
-              pg.getWorldPosition(_pw.current);
-              const viewDir = _pw.current.clone().sub(state.camera.position).normalize();
-              let bestDot = -Infinity, bestIdx = 0;
-              DET_POS[sel].forEach((lp, j) => {
-                const wp = new THREE.Vector3(...lp).applyMatrix4(pg.matrixWorld);
-                const td = wp.clone().sub(state.camera.position).normalize();
-                if (td.dot(viewDir) > bestDot) { bestDot = td.dot(viewDir); bestIdx = j; }
-              });
-              onImageClick(PLANETS[sel].fullUrls[bestIdx], sel);
-            }
-            dwellId.current = "cooldown";
-            dwellT.current = Date.now() + 2500;
-          }
-        } else if (dwellId.current !== "cooldown" || Date.now() > dwellT.current) {
-          dwellId.current = "img";
-          dwellT.current = Date.now();
-        }
       } else {
-        if (dwellId.current === "img") dwellId.current = null;
+        // Inside planet, select image
+        const pg = pRefs.current[sel];
+        if (pg) {
+           let bestImgIdx = -1, bestD = Infinity;
+           pg.children.forEach((child, j) => {
+              child.getWorldPosition(_pw.current);
+              const ndc = _pw.current.clone().project(state.camera);
+              if (ndc.z < 1) {
+                  const d = Math.hypot((ndc.x + 1) / 2 - inp.x, (1 - ndc.y) / 2 - inp.y);
+                  if (d < bestD) { bestD = d; bestImgIdx = j; }
+              }
+           });
+           
+           if (bestD < 0.15) {
+              if (justPoked) {
+                  onImageClick(PLANETS[sel].fullUrls[bestImgIdx], sel);
+              } else {
+                 if (dwellId.current === "img-"+bestImgIdx) {
+                     if (Date.now() - dwellT.current > 1500) {
+                         onImageClick(PLANETS[sel].fullUrls[bestImgIdx], sel);
+                         dwellId.current = "cooldown";
+                         dwellT.current = Date.now() + 2500;
+                     }
+                 } else if (dwellId.current !== "cooldown" || Date.now() > dwellT.current) {
+                     dwellId.current = "img-"+bestImgIdx;
+                     dwellT.current = Date.now();
+                 }
+              }
+           } else {
+              if (dwellId.current && dwellId.current.startsWith("img-")) dwellId.current = null;
+           }
+        }
       }
     }
   });
@@ -350,6 +419,9 @@ export default function Home() {
   const inputRef = useRef({ down:false, x:0.5, y:0.5, dragging:false, handPresent:false });
   const downPx   = useRef({ x:0, y:0 });
 
+  const spinToRef = useRef(null);
+  const fullscreenRef = useRef(null);
+
   // selRef for useFrame logic (no closure staleness)
   // selState for React rendering (triggers re-render)
   const selRef   = useRef(-1);
@@ -361,7 +433,9 @@ const [fullscreen, setFullscreen] = useState(null);
 // fullscreen = { globalIdx, url, planetIdx } | null
 const openImage = (url, planetIdx) => {
   const globalIdx = GLOBAL_IMGS.findIndex(g => g.url === url && g.planetIdx === planetIdx);
-  setFullscreen({ globalIdx: Math.max(0, globalIdx), url, planetIdx });
+  const state = { globalIdx: Math.max(0, globalIdx), url, planetIdx };
+  setFullscreen(state);
+  fullscreenRef.current = state;
 };
   const [mode,       setMode]       = useState("mouse");
   const [camReady,   setCamReady]   = useState(false);
@@ -409,24 +483,20 @@ const handleBack = () => {
       } else if (e.key === "ArrowLeft") {
         const prev = (fullscreen.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
         const g = GLOBAL_IMGS[prev];
-        setFullscreen({ globalIdx: prev, url: g.url, planetIdx: g.planetIdx });
+        const state = { globalIdx: prev, url: g.url, planetIdx: g.planetIdx };
+        setFullscreen(state);
+        fullscreenRef.current = state;
       } else if (e.key === "Escape") {
         const g = GLOBAL_IMGS[fullscreen.globalIdx];
         const targetPlanet = g.planetIdx;
         setFullscreen(null);
+        fullscreenRef.current = null;
+        spinToRef.current = { planetIdx: targetPlanet, localIdx: g.localIdx };
         if (targetPlanet !== selRef.current) {
           selRef.current = targetPlanet;
           stageRef.current = 2;
           setSelState(targetPlanet);
           setStage(2);
-          // NEW: Center camera on target planet
-          camRef.current.set(0, 0, 50);
-          lookRef.current.set(...PLANETS[targetPlanet].pos);
-          fovRef.current = 50;
-        } else {
-          stageRef.current = 2;
-          setStage(2);
-          fovRef.current = 50;
         }
       }
     };
@@ -512,22 +582,15 @@ const handleBack = () => {
           // Helper: hand size (wrist to middle MCP) as depth proxy
           const handSize = lm => Math.hypot(lm[9].x-lm[0].x, lm[9].y-lm[0].y);
 
-          // NEW: Helper: is only right index finger extended?
+          // Helper: is only index finger extended?
           const isSingleIndex = lm => {
             const indexTip = lm[8], indexMcp = lm[5];
-            const otherTips = [12, 16, 20];
-            const otherMcps = [9, 13, 17];
-            const thumbTip = lm[4];
-            const isIndexExtended = indexTip.y < indexMcp.y;
-            const areOthersRetracted = otherTips.every((t, i) => lm[t].y > lm[otherMcps[i]].y);
-            const isThumbOpen = thumbTip.z > lm[2].z - 0.05;
-            return isIndexExtended && areOthersRetracted && isThumbOpen;
+            const otherTips = [12, 16, 20], otherMcps = [9, 13, 17];
+            const isIndexExtended = indexTip.y < indexMcp.y - 0.05;
+            const areOthersRetracted = otherTips.every((t, i) => lm[t].y > lm[otherMcps[i]].y - 0.02);
+            return isIndexExtended && areOthersRetracted;
           };
-
-          // NEW: Helper: calculate 3D distance between two points (for pinch detection)
-          const pinchDistance = (lm, t1, t2) => {
-            return Math.hypot(lm[t1].x - lm[t2].x, lm[t1].y - lm[t2].y, (lm[t1].z - lm[t2].z) * 0.5);
-          };
+          const pinchDistance = (lm, a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y, lm[a].z - lm[b].z);
 
           if (R.landmarks?.length > 0) {
             // Draw all hands
@@ -562,33 +625,93 @@ const handleBack = () => {
             smoothRef.current.x += ((1 - primary[9].x) - smoothRef.current.x) * z;
             smoothRef.current.y += (primary[9].y - smoothRef.current.y) * z;
 
+            // Velocity tracking for swipe gestures
+            const now = Date.now();
+            const dtT = (now - (smoothRef.current.t || now)) / 1000 || 0.016;
+            smoothRef.current.velX = (smoothRef.current.x - (smoothRef.current.prevX || smoothRef.current.x)) / dtT;
+            smoothRef.current.velY = (smoothRef.current.y - (smoothRef.current.prevY || smoothRef.current.y)) / dtT;
+            smoothRef.current.prevX = smoothRef.current.x;
+            smoothRef.current.prevY = smoothRef.current.y;
+            smoothRef.current.t = now;
+
             // Gesture values
             const lFist = leftHand  ? isFist(leftHand)  : false;
             const rFist = rightHand ? isFist(rightHand) : false;
             const bothFists = lFist && rFist;
 
-            // NEW: Additional gesture detection
             const rIndex = rightHand ? isSingleIndex(rightHand) : false;
+            const lIndex = leftHand ? isSingleIndex(leftHand) : false;
             const rPinch = rightHand ? pinchDistance(rightHand, 4, 8) < 0.08 : false;
 
-            // NEW: Velocity tracking for swipe gestures
-            const now = performance.now();
-            const dt = now - smoothRef.current.t;
-            if (dt > 0 && smoothRef.current.prevX !== undefined) {
-              smoothRef.current.velX = (smoothRef.current.x - smoothRef.current.prevX) / (dt / 16);
-              smoothRef.current.velY = (smoothRef.current.y - smoothRef.current.prevY) / (dt / 16);
+            // Poke logic
+            const zIndex = rightHand ? rightHand[8].z : (leftHand ? leftHand[8].z : 0);
+            if (rIndex || lIndex) {
+              if (smoothRef.current.pokeZ === undefined) smoothRef.current.pokeZ = zIndex;
+              const pokeDelta = zIndex - smoothRef.current.pokeZ;
+              if (pokeDelta < -0.04) {
+                  smoothRef.current.isPoking = true;
+              } else if (pokeDelta > 0.03 && smoothRef.current.isPoking) {
+                  smoothRef.current.isPoking = false;
+                  inputRef.current.pokeClick = true;
+                  smoothRef.current.pokeZ = zIndex;
+              }
+              smoothRef.current.pokeZ += (zIndex - smoothRef.current.pokeZ) * 0.15;
+            } else {
+              smoothRef.current.isPoking = false;
+              smoothRef.current.pokeZ = undefined;
             }
-            smoothRef.current.prevX = smoothRef.current.x;
-            smoothRef.current.prevY = smoothRef.current.y;
-            smoothRef.current.t = now;
 
-            // NEW: Update cursor position
+            // Update cursor position
             setCursor({
               visible: true,
               x: smoothRef.current.x * 100,
               y: smoothRef.current.y * 100,
-              type: rIndex ? 'index' : (bothFists ? 'fist' : 'hand')
+              type: (rIndex || lIndex) ? 'index' : (bothFists ? 'fist' : 'default')
             });
+
+            // Handle swipe gesture for carousel navigation
+            const fs = fullscreenRef.current;
+            if (fs && Math.abs(smoothRef.current.velX || 0) > 0.3) {
+              if (now - (smoothRef.current.lastSwipe || 0) > 500) {
+                smoothRef.current.lastSwipe = now;
+                if ((smoothRef.current.velX || 0) > 0.3) {
+                  const prev = (fs.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
+                  const g = GLOBAL_IMGS[prev];
+                  const state = { globalIdx: prev, url: g.url, planetIdx: g.planetIdx };
+                  setFullscreen(state);
+                  fullscreenRef.current = state;
+                } else if ((smoothRef.current.velX || 0) < -0.3) {
+                  const next = (fs.globalIdx + 1) % GLOBAL_IMGS.length;
+                  const g = GLOBAL_IMGS[next];
+                  const state = { globalIdx: next, url: g.url, planetIdx: g.planetIdx };
+                  setFullscreen(state);
+                  fullscreenRef.current = state;
+                }
+              }
+            }
+
+            // Handle pinch gesture to go back
+            if (rPinch && stageRef.current > 0 && !fs) {
+              if (now - (smoothRef.current.lastBack || 0) > 1000) {
+                 smoothRef.current.lastBack = now;
+                 handleBack();
+              }
+            } else if (rPinch && fs) {
+              if (now - (smoothRef.current.lastBack || 0) > 1000) {
+                  smoothRef.current.lastBack = now;
+                  const g = GLOBAL_IMGS[fs.globalIdx];
+                  const tp = g.planetIdx;
+                  setFullscreen(null);
+                  fullscreenRef.current = null;
+                  spinToRef.current = { planetIdx: tp, localIdx: g.localIdx };
+                  if (tp !== selRef.current) {
+                    selRef.current = tp;
+                    stageRef.current = 2;
+                    setSelState(tp);
+                    setStage(2);
+                  }
+              }
+            }
 
             // Left hand Y → density (0.5=normal, 0=tight, 1=spread)
             const densityY = leftHand ? leftHand[9].y : 0.5;
@@ -615,26 +738,6 @@ const handleBack = () => {
               depthProxy,
               panX,
             };
-
-            // NEW: Handle swipe gesture for carousel navigation
-            if (fullscreen && Math.abs(smoothRef.current.velX || 0) > 0.15) {
-              if ((smoothRef.current.velX || 0) > 0.15) {
-                // Hand moving left → show previous image
-                const prev = (fullscreen.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
-                const g = GLOBAL_IMGS[prev];
-                setFullscreen({ globalIdx: prev, url: g.url, planetIdx: g.planetIdx });
-              } else if ((smoothRef.current.velX || 0) < -0.15) {
-                // Hand moving right → show next image
-                const next = (fullscreen.globalIdx + 1) % GLOBAL_IMGS.length;
-                const g = GLOBAL_IMGS[next];
-                setFullscreen({ globalIdx: next, url: g.url, planetIdx: g.planetIdx });
-              }
-            }
-
-            // NEW: Handle pinch gesture to go back
-            if (rPinch && stageRef.current > 0) {
-              handleBack();
-            }
           } else {
             smoothRef.current.x += (0.5 - smoothRef.current.x) * 0.06;
             smoothRef.current.y += (0.5 - smoothRef.current.y) * 0.06;
@@ -688,6 +791,8 @@ const handleBack = () => {
   camRef={camRef}
   lookRef={lookRef}
   fovRef={fovRef}
+  spinToRef={spinToRef}
+  fullscreen={fullscreen}
 />
             <Environment preset="studio" />
           </Suspense>
@@ -732,7 +837,7 @@ const handleBack = () => {
           width:240,height:135,borderRadius:"1.8rem",overflow:"hidden",
           boxShadow:"0 20px 40px -10px rgba(0,0,0,0.1)",border:"5px solid white",
           background:"white",opacity:camReady?1:0.3,transition:"opacity 0.5s",zIndex:10}}>
-          <video ref={videoRef} playsInline muted style={{display:"none"}} width={240} height={135}/>
+          <video ref={videoRef} playsInline muted style={{position:"absolute", opacity:0, pointerEvents:"none"}} width={240} height={135}/>
           <canvas ref={cameraCanvasRef} width={240} height={135}
             style={{width:"100%",height:"100%",objectFit:"cover"}}/>
         </div>
@@ -783,7 +888,9 @@ const handleBack = () => {
           <button onClick={() => {
             const prev = (fullscreen.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
             const g = GLOBAL_IMGS[prev];
-            setFullscreen({ globalIdx: prev, url: g.url, planetIdx: g.planetIdx });
+            const state = { globalIdx: prev, url: g.url, planetIdx: g.planetIdx };
+            setFullscreen(state);
+            fullscreenRef.current = state;
           }} style={{
             position:"absolute",left:32,top:"50%",transform:"translateY(-50%)",
             background:"rgba(0,0,0,0.06)",border:"none",borderRadius:"50%",
@@ -800,7 +907,9 @@ const handleBack = () => {
           <button onClick={() => {
             const next = (fullscreen.globalIdx + 1) % GLOBAL_IMGS.length;
             const g = GLOBAL_IMGS[next];
-            setFullscreen({ globalIdx: next, url: g.url, planetIdx: g.planetIdx });
+            const state = { globalIdx: next, url: g.url, planetIdx: g.planetIdx };
+            setFullscreen(state);
+            fullscreenRef.current = state;
           }} style={{
             position:"absolute",right:32,top:"50%",transform:"translateY(-50%)",
             background:"rgba(0,0,0,0.06)",border:"none",borderRadius:"50%",
@@ -823,6 +932,8 @@ const handleBack = () => {
             const g = GLOBAL_IMGS[fullscreen.globalIdx];
             const tp = g.planetIdx;
             setFullscreen(null);
+            fullscreenRef.current = null;
+            spinToRef.current = { planetIdx: tp, localIdx: g.localIdx };
             if (tp !== selRef.current) {
               selRef.current = tp;
               stageRef.current = 2;
