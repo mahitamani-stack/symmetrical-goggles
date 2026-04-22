@@ -39,6 +39,10 @@ function fib(n, r) {
 }
 const SYS_POS = PLANETS.map(p => fib(N_PREV, p.r));
 const DET_POS = PLANETS.map(p => fib(p.fullUrls.length, p.r));
+// Global flat list: index → {planetIdx, localIdx, url}
+const GLOBAL_IMGS = PLANETS.flatMap((p, pi) =>
+  p.fullUrls.map((url, li) => ({ url, planetIdx: pi, localIdx: li }))
+);
 
 const HC=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
 
@@ -191,6 +195,22 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
       }
     });
 
+// ── HAND GESTURES inside planet ────────────────────────────────
+    if (sel !== -1 && inp.handPresent) {
+      const pg = pRefs.current[sel];
+      if (pg) {
+        // Both fists → toggle grid (handled via React state below via ref)
+        // Left hand Y controls Y-spread of tiles (density)
+        // Right hand size controls tile scale
+        // These are passed as gestureRef for Scene to apply each frame
+        if (inp.bothFists) {
+          pg.userData.gridMode = !pg.userData.gridMode;
+          inp.bothFists = false; // consume
+        }
+        // Left/right hand movement rotates planet (already handled in hand rotation block)
+      }
+    }
+    
     // ── CAMERA TARGET: computed from WORLD POSITION every frame ────
     // This is the key fix — world position accounts for system group rotation
     // Camera always flies to where the planet ACTUALLY IS, not where it started
@@ -261,7 +281,7 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
                 const td = wp.clone().sub(state.camera.position).normalize();
                 if (td.dot(viewDir) > bestDot) { bestDot = td.dot(viewDir); bestIdx = j; }
               });
-              onImageClick(PLANETS[sel].fullUrls[bestIdx]);
+              onImageClick(PLANETS[sel].fullUrls[bestIdx], sel);
             }
             dwellId.current = "cooldown";
             dwellT.current = Date.now() + 2500;
@@ -305,8 +325,8 @@ function Scene({ inputRef, selRef, stageRef, selState, stage, mode, onSelect, on
     ? () => { if (!inputRef.current.dragging) onSelect(i); }
     : isSel && stage === 1
     ? () => { if (!inputRef.current.dragging) onDeepen(); }
-    : isSel && stage === 2
-    ? () => onImageClick(url)
+: isSel && stage === 2
+    ? () => onImageClick(url, i)
     : undefined
 }
               />
@@ -335,7 +355,12 @@ const stageRef = useRef(0); // 0=system 1=planet-overview 2=inside
 const [selState, setSelState] = useState(-1);
 const [stage,    setStage]    = useState(0);
 
-  const [fullscreen, setFullscreen] = useState(null);
+const [fullscreen, setFullscreen] = useState(null);
+// fullscreen = { globalIdx, url, planetIdx } | null
+const openImage = (url, planetIdx) => {
+  const globalIdx = GLOBAL_IMGS.findIndex(g => g.url === url && g.planetIdx === planetIdx);
+  setFullscreen({ globalIdx: Math.max(0, globalIdx), url, planetIdx });
+};
   const [mode,       setMode]       = useState("mouse");
   const [camReady,   setCamReady]   = useState(false);
 
@@ -370,6 +395,35 @@ const handleBack = () => {
   inputRef.current = { ...inputRef.current, down:false, dragging:false };
 };
 
+  // ── Carousel keyboard navigation ──────────────────────────────────
+  useEffect(() => {
+    const onKey = e => {
+      if (!fullscreen) return;
+      if (e.key === "ArrowRight") {
+        const next = (fullscreen.globalIdx + 1) % GLOBAL_IMGS.length;
+        const g = GLOBAL_IMGS[next];
+        setFullscreen({ globalIdx: next, url: g.url, planetIdx: g.planetIdx });
+      } else if (e.key === "ArrowLeft") {
+        const prev = (fullscreen.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
+        const g = GLOBAL_IMGS[prev];
+        setFullscreen({ globalIdx: prev, url: g.url, planetIdx: g.planetIdx });
+      } else if (e.key === "Escape") {
+        const g = GLOBAL_IMGS[fullscreen.globalIdx];
+        const targetPlanet = g.planetIdx;
+        setFullscreen(null);
+        if (targetPlanet !== selRef.current) {
+          selRef.current = targetPlanet;
+          stageRef.current = 2;
+          setSelState(targetPlanet);
+          setStage(2);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+ 
   // ── Mouse events ───────────────────────────────────────────────────
   useEffect(() => {
     const dn = e => {
@@ -420,7 +474,7 @@ const handleBack = () => {
             modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
             delegate: "GPU",
           },
-          runningMode: "VIDEO", numHands: 1,
+          runningMode: "VIDEO", numHands: 2,
         });
         stream = await navigator.mediaDevices.getUserMedia(
           { video:{ width:240, height:135, facingMode:"user" } });
@@ -437,35 +491,77 @@ const handleBack = () => {
           ctx.save(); ctx.translate(240, 0); ctx.scale(-1, 1);
           ctx.drawImage(v, 0, 0, 240, 135); ctx.restore();
           const R = hl.detectForVideo(v, performance.now());
+         // Helper: is hand a fist? (all fingertips below their MCP joints)
+          const isFist = lm => {
+            const tips = [8,12,16,20], mcps = [5,9,13,17];
+            return tips.every((t,i) => lm[t].y > lm[mcps[i]].y);
+          };
+          // Helper: hand size (wrist to middle MCP) as depth proxy
+          const handSize = lm => Math.hypot(lm[9].x-lm[0].x, lm[9].y-lm[0].y);
+
           if (R.landmarks?.length > 0) {
-            const lm  = R.landmarks[0];
-            const mir = lm.map(p => ({...p, x:1-p.x}));
-            ctx.strokeStyle="#000"; ctx.lineWidth=2;
-            HC.forEach(([a,b]) => {
-              ctx.beginPath();
-              ctx.moveTo(mir[a].x*240, mir[a].y*135);
-              ctx.lineTo(mir[b].x*240, mir[b].y*135);
-              ctx.stroke();
+            // Draw all hands
+            R.landmarks.forEach(lm => {
+              const mir = lm.map(p => ({...p, x:1-p.x}));
+              ctx.strokeStyle="#000"; ctx.lineWidth=2;
+              HC.forEach(([a,b]) => {
+                ctx.beginPath();
+                ctx.moveTo(mir[a].x*240, mir[a].y*135);
+                ctx.lineTo(mir[b].x*240, mir[b].y*135);
+                ctx.stroke();
+              });
+              mir.forEach(p => {
+                ctx.beginPath(); ctx.arc(p.x*240, p.y*135, 2.5,0,Math.PI*2);
+                ctx.fillStyle="#fff"; ctx.fill();
+                ctx.strokeStyle="#000"; ctx.lineWidth=1; ctx.stroke();
+              });
             });
-            mir.forEach(p => {
-              ctx.beginPath(); ctx.arc(p.x*240, p.y*135, 2.5, 0, Math.PI*2);
-              ctx.fillStyle="#fff"; ctx.fill();
-              ctx.strokeStyle="#000"; ctx.lineWidth=1; ctx.stroke();
+
+            // Identify left/right hands
+            let leftHand = null, rightHand = null;
+            R.landmarks.forEach((lm, hi) => {
+              const handedness = R.handedness?.[hi]?.[0]?.categoryName;
+              // MediaPipe returns mirrored, so "Left" in result = user's right
+              if (handedness === "Left") rightHand = lm;
+              else leftHand = lm;
             });
-            // Palm (landmark 9) for position — smooth it
+
+            // Primary hand for navigation (first detected)
+            const primary = leftHand || rightHand || R.landmarks[0];
             const z = 0.32;
-            smoothRef.current.x += (mir[9].x - smoothRef.current.x) * z;
-            smoothRef.current.y += (mir[9].y - smoothRef.current.y) * z;
+            smoothRef.current.x += ((1 - primary[9].x) - smoothRef.current.x) * z;
+            smoothRef.current.y += (primary[9].y - smoothRef.current.y) * z;
+
+            // Gesture values
+            const lFist = leftHand  ? isFist(leftHand)  : false;
+            const rFist = rightHand ? isFist(rightHand) : false;
+            const bothFists = lFist && rFist;
+
+            // Left hand Y → density (0.5=normal, 0=tight, 1=spread)
+            const densityY = leftHand ? leftHand[9].y : 0.5;
+            // Right hand size → scale proxy (larger = closer = bigger scale)
+            const rSize = rightHand ? handSize(rightHand) : 0.18;
+            const scaleProxy = Math.max(0.5, Math.min(3.0, rSize / 0.18));
+            // Average hand depth via size (bigger hand = closer to camera)
+            const depthProxy = leftHand ? Math.max(0.3, Math.min(2.0, handSize(leftHand) / 0.15)) : 1.0;
+            // Horizontal movement of either hand → pan
+            const panX = (leftHand || rightHand) ? (1 - primary[9].x) : 0.5;
+
             inputRef.current = {
               ...inputRef.current,
               x: smoothRef.current.x,
               y: smoothRef.current.y,
               handPresent: true,
+              bothFists,
+              densityY,
+              scaleProxy,
+              depthProxy,
+              panX,
             };
           } else {
             smoothRef.current.x += (0.5 - smoothRef.current.x) * 0.06;
             smoothRef.current.y += (0.5 - smoothRef.current.y) * 0.06;
-            inputRef.current = { ...inputRef.current, handPresent:false };
+            inputRef.current = { ...inputRef.current, handPresent:false, bothFists:false };
           }
         }
         detect();
@@ -510,7 +606,7 @@ const handleBack = () => {
   mode={mode}
   onSelect={handleSelect}
   onDeepen={handleDeepen}
-  onImageClick={setFullscreen}
+  onImageClick={openImage}
   camRef={camRef}
   lookRef={lookRef}
   fovRef={fovRef}
@@ -564,16 +660,71 @@ const handleBack = () => {
         </div>
       )}
 
-      {/* Fullscreen modal */}
+     {/* Fullscreen carousel modal */}
       {fullscreen && (
-        <div onClick={() => setFullscreen(null)} style={{
+        <div style={{
           position:"fixed",inset:0,background:"rgba(255,255,255,0.97)",
           display:"flex",alignItems:"center",justifyContent:"center",
-          zIndex:999,cursor:"zoom-out",
-          animation:"zoomIn 0.2s cubic-bezier(0.34,1.56,0.64,1)"}}>
+          zIndex:999, animation:"zoomIn 0.2s cubic-bezier(0.34,1.56,0.64,1)"}}>
           <style>{`@keyframes zoomIn{from{opacity:0;transform:scale(0.7)}to{opacity:1;transform:scale(1)}}`}</style>
-          <img src={fullscreen} alt=""
-            style={{maxWidth:"88vw",maxHeight:"88vh",objectFit:"contain"}}/>
+
+          {/* Prev arrow */}
+          <button onClick={() => {
+            const prev = (fullscreen.globalIdx - 1 + GLOBAL_IMGS.length) % GLOBAL_IMGS.length;
+            const g = GLOBAL_IMGS[prev];
+            setFullscreen({ globalIdx: prev, url: g.url, planetIdx: g.planetIdx });
+          }} style={{
+            position:"absolute",left:32,top:"50%",transform:"translateY(-50%)",
+            background:"rgba(0,0,0,0.06)",border:"none",borderRadius:"50%",
+            width:52,height:52,fontSize:22,cursor:"pointer",
+            display:"flex",alignItems:"center",justifyContent:"center",
+            fontFamily:"sans-serif",color:"#333",zIndex:10
+          }}>‹</button>
+
+          {/* Image */}
+          <img src={fullscreen.url} alt=""
+            style={{maxWidth:"80vw",maxHeight:"84vh",objectFit:"contain"}}/>
+
+          {/* Next arrow */}
+          <button onClick={() => {
+            const next = (fullscreen.globalIdx + 1) % GLOBAL_IMGS.length;
+            const g = GLOBAL_IMGS[next];
+            setFullscreen({ globalIdx: next, url: g.url, planetIdx: g.planetIdx });
+          }} style={{
+            position:"absolute",right:32,top:"50%",transform:"translateY(-50%)",
+            background:"rgba(0,0,0,0.06)",border:"none",borderRadius:"50%",
+            width:52,height:52,fontSize:22,cursor:"pointer",
+            display:"flex",alignItems:"center",justifyContent:"center",
+            fontFamily:"sans-serif",color:"#333",zIndex:10
+          }}>›</button>
+
+          {/* Counter */}
+          <div style={{
+            position:"absolute",bottom:28,left:"50%",transform:"translateX(-50%)",
+            fontSize:11,fontWeight:600,letterSpacing:"0.12em",
+            color:"rgba(0,0,0,0.3)",fontFamily:"Inter,sans-serif",textTransform:"uppercase"
+          }}>
+            {fullscreen.globalIdx + 1} / {GLOBAL_IMGS.length} · Planet {fullscreen.planetIdx + 1}
+          </div>
+
+          {/* Exit — returns to correct planet */}
+          <button onClick={() => {
+            const g = GLOBAL_IMGS[fullscreen.globalIdx];
+            const tp = g.planetIdx;
+            setFullscreen(null);
+            if (tp !== selRef.current) {
+              selRef.current = tp;
+              stageRef.current = 2;
+              setSelState(tp);
+              setStage(2);
+            }
+          }} style={{
+            position:"absolute",top:24,right:24,
+            background:"rgba(0,0,0,0.06)",border:"none",borderRadius:"2rem",
+            padding:"8px 20px",fontSize:11,fontWeight:600,
+            letterSpacing:"0.1em",cursor:"pointer",
+            fontFamily:"Inter,sans-serif",color:"#333",textTransform:"uppercase"
+          }}>✕ CLOSE</button>
         </div>
       )}
     </div>
