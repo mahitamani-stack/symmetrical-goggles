@@ -415,6 +415,7 @@ export default function Home() {
   const cameraCanvasRef = useRef(null);
   const smoothRef       = useRef({ x: 0.5, y: 0.5 });
 
+  const cursorRef       = useRef(null);
   // Unified input state — mutated directly, read in useFrame
   const inputRef = useRef({ down:false, x:0.5, y:0.5, dragging:false, handPresent:false });
   const downPx   = useRef({ x:0, y:0 });
@@ -439,7 +440,6 @@ const openImage = (url, planetIdx) => {
 };
   const [mode,       setMode]       = useState("mouse");
   const [camReady,   setCamReady]   = useState(false);
-  const [cursor, setCursor] = useState({ visible: false, x: 0, y: 0, type: 'default' });
 
 const camRef  = useRef(new THREE.Vector3(0, 0, 100));
 const lookRef = useRef(new THREE.Vector3(0, 0, 0));
@@ -557,23 +557,31 @@ const handleBack = () => {
           },
           runningMode: "VIDEO", numHands: 2,
         });
-        stream = await navigator.mediaDevices.getUserMedia(
+      stream = await navigator.mediaDevices.getUserMedia(
           { video:{ width:240, height:135, facingMode:"user" } });
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play().catch(e => console.warn("Video play failed:", e));
+          videoRef.current.play().catch(e => console.warn("play failed:", e));
           setCamReady(true);
         };
         const ctx = cameraCanvasRef.current.getContext("2d");
         let lastTime = -1;
+        let lastVideoTimeMs = -1;
         function detect() {
           animId = requestAnimationFrame(detect);
-          const v = videoRef.current;
-          if (!v || v.currentTime === lastTime) return;
-          lastTime = v.currentTime;
-          ctx.save(); ctx.translate(240, 0); ctx.scale(-1, 1);
-          ctx.drawImage(v, 0, 0, 240, 135); ctx.restore();
-          const R = hl.detectForVideo(v, v.currentTime * 1000);
+          try {
+            const v = videoRef.current;
+            if (!v || v.readyState < 2 || v.currentTime === lastTime) return;
+            lastTime = v.currentTime;
+            ctx.save(); ctx.translate(240, 0); ctx.scale(-1, 1);
+            ctx.drawImage(v, 0, 0, 240, 135); ctx.restore();
+            
+            let nowInMs = performance.now();
+            if (nowInMs <= lastVideoTimeMs) {
+                nowInMs = lastVideoTimeMs + 1;
+            }
+            lastVideoTimeMs = nowInMs;
+            const R = hl.detectForVideo(v, nowInMs);
          // Helper: is hand a fist? (all fingertips below their MCP joints)
           const isFist = lm => {
             const tips = [8,12,16,20], mcps = [5,9,13,17];
@@ -662,12 +670,31 @@ const handleBack = () => {
             }
 
             // Update cursor position
-            setCursor({
-              visible: true,
-              x: smoothRef.current.x * 100,
-              y: smoothRef.current.y * 100,
-              type: (rIndex || lIndex) ? 'index' : (bothFists ? 'fist' : 'default')
-            });
+            if (cursorRef.current) {
+                cursorRef.current.style.display = 'block';
+                cursorRef.current.style.left = `${smoothRef.current.x * 100}%`;
+                cursorRef.current.style.top = `${smoothRef.current.y * 100}%`;
+                
+                if (rIndex || lIndex) {
+                   cursorRef.current.style.width = '20px';
+                   cursorRef.current.style.height = '20px';
+                   cursorRef.current.style.border = '2px solid #FF6B6B';
+                   cursorRef.current.style.background = 'transparent';
+                   cursorRef.current.style.boxShadow = '0 0 12px rgba(255, 107, 107, 0.5)';
+                } else if (bothFists) {
+                   cursorRef.current.style.width = '24px';
+                   cursorRef.current.style.height = '24px';
+                   cursorRef.current.style.border = 'none';
+                   cursorRef.current.style.background = 'rgba(255, 107, 107, 0.3)';
+                   cursorRef.current.style.boxShadow = 'none';
+                } else {
+                   cursorRef.current.style.width = '16px';
+                   cursorRef.current.style.height = '16px';
+                   cursorRef.current.style.border = 'none';
+                   cursorRef.current.style.background = '#666';
+                   cursorRef.current.style.boxShadow = 'none';
+                }
+            }
 
             // Handle swipe gesture for carousel navigation
             const fs = fullscreenRef.current;
@@ -741,8 +768,11 @@ const handleBack = () => {
           } else {
             smoothRef.current.x += (0.5 - smoothRef.current.x) * 0.06;
             smoothRef.current.y += (0.5 - smoothRef.current.y) * 0.06;
-            setCursor({ visible: false, x: 0, y: 0, type: 'default' });
+            if (cursorRef.current) cursorRef.current.style.display = 'none';
             inputRef.current = { ...inputRef.current, handPresent:false, bothFists:false, rIndex: false, rPinch: false, velocityX: 0, velocityY: 0 };
+          }
+          } catch (err) {
+            console.error("Hand tracking error:", err);
           }
         }
         detect();
@@ -754,7 +784,7 @@ const handleBack = () => {
       stream?.getTracks().forEach(t => t.stop());
       setCamReady(false);
     };
-  }, [mode, fullscreen, stageRef]);
+  }, [mode]);
 
   const btn = {
     display:"flex", alignItems:"center", gap:8, padding:"10px 20px",
@@ -837,43 +867,23 @@ const handleBack = () => {
           width:240,height:135,borderRadius:"1.8rem",overflow:"hidden",
           boxShadow:"0 20px 40px -10px rgba(0,0,0,0.1)",border:"5px solid white",
           background:"white",opacity:camReady?1:0.3,transition:"opacity 0.5s",zIndex:10}}>
-          <video ref={videoRef} playsInline muted style={{position:"absolute", opacity:0, pointerEvents:"none"}} width={240} height={135}/>
+          <video ref={videoRef} autoPlay playsInline muted style={{position:"absolute", opacity:0, pointerEvents:"none"}} width={240} height={135}/>
           <canvas ref={cameraCanvasRef} width={240} height={135}
             style={{width:"100%",height:"100%",objectFit:"cover"}}/>
         </div>
       )}
 
       {/* Hand cursor (visible when hand detected) */}
-      {mode === "hand" && cursor.visible && (
-        <div style={{
+      {mode === "hand" && (
+        <div ref={cursorRef} style={{
           position:"fixed",
-          left:`${cursor.x}%`,
-          top:`${cursor.y}%`,
+          display:"none",
           transform:"translate(-50%, -50%)",
           zIndex:500,
-          pointerEvents:"none"
-        }}>
-          {cursor.type === 'index' ? (
-            <div style={{
-              width:20, height:20,
-              border:"2px solid #FF6B6B",
-              borderRadius:"50%",
-              boxShadow:"0 0 12px rgba(255, 107, 107, 0.5)"
-            }}/>
-          ) : cursor.type === 'fist' ? (
-            <div style={{
-              width:24, height:24,
-              background:"rgba(255, 107, 107, 0.3)",
-              borderRadius:"50%"
-            }}/>
-          ) : (
-            <div style={{
-              width:16, height:16,
-              background:"#666",
-              borderRadius:"50%"
-            }}/>
-          )}
-        </div>
+          pointerEvents:"none",
+          borderRadius:"50%",
+          transition: "width 0.15s, height 0.15s, background 0.15s"
+        }} />
       )}
 
      {/* Fullscreen carousel modal */}
